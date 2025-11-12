@@ -54,8 +54,19 @@ button[disabled]{opacity:.45; cursor:not-allowed}
 
 /* Game */
 #game .hud{display:flex; justify-content:space-between; align-items:center; margin:10px 0 16px}
-.canvas-wrap{display:grid; place-items:center}
+.canvas-wrap{display:grid; place-items:center; position:relative}
 canvas{ background:#083223; border:2px solid #153b2a; border-radius:12px; width:900px; height:480px; max-width:92vw }
+
+/* Trays (vänster/höger om bordet) */
+.tray{
+  position:absolute; top:8px; bottom:8px; width:140px;
+  display:flex; flex-direction:column; gap:8px;
+  padding:10px; background:#0b1f17; border:1px solid #143425; border-radius:12px;
+}
+.tray h4{ margin:0; font-weight:800; color:var(--accent); text-align:center }
+.tray .grid{ display:grid; grid-template-columns: repeat(3, 1fr); gap:8px; align-content:start }
+.tray-left{ right:100%; margin-right:10px }
+.tray-right{ left:100%;  margin-left:10px }
 
 .overlay{ position:absolute; inset:0; display:none; align-items:center; justify-content:center; background:rgba(6,26,18,.75); border-radius:12px; }
 .overlay .inner{ text-align:center; padding:24px; max-width:90%; }
@@ -70,10 +81,7 @@ canvas{ background:#083223; border:2px solid #153b2a; border-radius:12px; width:
   <div id="chatPanel" class="card chat">
     <h3>Lobbychatt</h3>
     <div id="chatLog" class="chat-log"></div>
-    <div class="chat-input">
-      <input id="chatText" type="text" placeholder="Skriv ett meddelande…" maxlength="500" />
-      <button id="chatSend">Skicka</button>
-    </div>
+    <div class="chat-input"><input id="chatText" type="text" placeholder="Skriv ett meddelande…" maxlength="500" /><button id="chatSend">Skicka</button></div>
   </div>
 
   <!-- Mitte: lobby/game -->
@@ -89,9 +97,7 @@ canvas{ background:#083223; border:2px solid #153b2a; border-radius:12px; width:
       </div>
       <div class="muted"><span id="count">0</span> spelare i kön</div>
       <div id="names" class="names"></div>
-      <div style="margin-top:10px">
-        <button id="leave" style="display:none">Lämna kön</button>
-      </div>
+      <div style="margin-top:10px"><button id="leave" style="display:none">Lämna kön</button></div>
     </div>
 
     <!-- Game -->
@@ -101,9 +107,20 @@ canvas{ background:#083223; border:2px solid #153b2a; border-radius:12px; width:
         <div class="muted" id="turnHint"></div>
         <button id="exit">Lämna match</button>
       </div>
+
       <div class="canvas-wrap">
+        <!-- trays -->
+        <div class="tray tray-left">
+          <h4 id="trayLeftName">Spelare A</h4>
+          <div id="trayLeftGrid" class="grid"></div>
+        </div>
         <canvas id="tbl" width="1080" height="540"></canvas>
+        <div class="tray tray-right">
+          <h4 id="trayRightName">Spelare B</h4>
+          <div id="trayRightGrid" class="grid"></div>
+        </div>
       </div>
+
       <div class="muted" id="status"></div>
 
       <div id="overlay" class="overlay">
@@ -132,6 +149,8 @@ document.addEventListener('DOMContentLoaded', ()=>{
   const overlay=el('overlay'), ovTitle=el('ovTitle'), ovActions=el('ovActions'), ovTimer=el('ovTimer');
   const chatLog=el('chatLog'), chatText=el('chatText'), chatSend=el('chatSend');
   const scoreList=el('scoreList');
+  const trayLeftName=el('trayLeftName'), trayRightName=el('trayRightName');
+  const trayLeftGrid=el('trayLeftGrid'), trayRightGrid=el('trayRightGrid');
 
   function updateJoin(){ joinBtn.disabled = nameInput.value.trim().length<1; }
   nameInput.addEventListener('input', updateJoin); updateJoin();
@@ -183,7 +202,7 @@ document.addEventListener('DOMContentLoaded', ()=>{
 
   let aim = { down:false, sx:0, sy:0, ex:0, ey:0, power:0, placing:false };
 
-  // polyfill för roundRect
+  // polyfill roundRect
   if (!CanvasRenderingContext2D.prototype.roundRect) {
     CanvasRenderingContext2D.prototype.roundRect = function(x,y,w,h,r){
       const rr = Math.min(r, w/2, h/2);
@@ -248,7 +267,7 @@ document.addEventListener('DOMContentLoaded', ()=>{
     // nummerplatta
     if(number!==0){
       ctx.beginPath(); ctx.arc(x,y,r*0.45,0,Math.PI*2); ctx.fillStyle='#f1f1f1'; ctx.fill();
-      ctx.fillStyle= number===8 ? '#fff' : '#000';
+      ctx.fillStyle = number===8 ? '#000' : '#000'; // 8:an svart siffra på vit platta
       ctx.font=`${Math.floor(r*1.1)}px Nunito`; ctx.textAlign='center'; ctx.textBaseline='middle';
       ctx.fillText(String(number), x, y+0.5);
     }
@@ -261,32 +280,42 @@ document.addEventListener('DOMContentLoaded', ()=>{
     }
   }
 
-  // NYTT: små brickor med sänkta bollar per spelare
-  function drawCollected(s){
-    if(!s.pottedBy) return;
-    const leftId = s.players[0], rightId = s.players[1];
-    const leftList = (s.pottedBy[leftId] || []).slice().sort((a,b)=>a-b);
-    const rightList= (s.pottedBy[rightId]|| []).slice().sort((a,b)=>a-b);
-
-    // bakgrundsband
-    const pad = 6, r = 7, gap = 4;
-    const leftX = s.m - 2, rightX = c.width - s.m + 2;
-    const topY = s.m + 16;
-
-    // vänster
-    let y = topY;
-    for (const num of leftList) {
-      drawBallShaded(leftX, y, r, ballColor(num), num);
-      y += r*2 + gap;
-      if (y > c.height - s.m - 16) break;
+  // trays: rendera sänkta bollar och namn
+  function renderTrays(s){
+    trayLeftName.textContent = s.names[s.players[0]] || 'Spelare';
+    trayRightName.textContent = s.names[s.players[1]] || 'Spelare';
+    function fill(grid, arr){
+      grid.innerHTML = '';
+      const r = 12; // ikon-storlek i tray
+      for (const num of (arr||[]).slice().sort((a,b)=>a-b)) {
+        const cnv = document.createElement('canvas');
+        cnv.width = cnv.height = r*2+6;
+        const c2 = cnv.getContext('2d');
+        function drawIcon(){
+          c2.clearRect(0,0,cnv.width,cnv.height);
+          // liten skugga
+          c2.beginPath(); c2.arc(r+3,r+3,r,0,Math.PI*2); c2.fillStyle='rgba(0,0,0,.25)'; c2.fill();
+          const g = c2.createRadialGradient(r- r*0.3, r- r*0.3, r*0.2, r, r, r);
+          g.addColorStop(0,'#fff');
+          g.addColorStop(0.15, COLORS[num] || '#e9f1e6');
+          g.addColorStop(1,'#1e1e1e');
+          c2.beginPath(); c2.arc(r+3,r+3,r,0,Math.PI*2); c2.fillStyle=g; c2.fill();
+          if(num>=9 && num<=15){
+            c2.beginPath(); c2.arc(r+3,r+3,r*0.67,0,Math.PI*2); c2.fillStyle='#f1f9f6'; c2.fill();
+          }
+          if(num!==0){
+            c2.beginPath(); c2.arc(r+3,r+3,r*0.45,0,Math.PI*2); c2.fillStyle='#f1f1f1'; c2.fill();
+            c2.fillStyle='#000';
+            c2.font=`${Math.floor(r*1.1)}px Nunito`; c2.textAlign='center'; c2.textBaseline='middle';
+            c2.fillText(String(num), r+3, r+3.5);
+          }
+        }
+        drawIcon();
+        grid.appendChild(cnv);
+      }
     }
-    // höger
-    y = topY;
-    for (const num of rightList) {
-      drawBallShaded(rightX, y, r, ballColor(num), num);
-      y += r*2 + gap;
-      if (y > c.height - s.m - 16) break;
-    }
+    fill(trayLeftGrid,  s.pottedBy[s.players[0]]);
+    fill(trayRightGrid, s.pottedBy[s.players[1]]);
   }
 
   // Cue bakom bollen (rätt riktning)
@@ -296,7 +325,6 @@ document.addEventListener('DOMContentLoaded', ()=>{
     const cue = s.balls.find(b=>b.id===0);
     if(!cue || cue.potted) return;
 
-    // riktning från mus mot boll
     const dx = cue.x - (aim.ex||cue.x);
     const dy = cue.y - (aim.ey||cue.y);
     const ang = Math.atan2(dy, dx);
@@ -318,12 +346,9 @@ document.addEventListener('DOMContentLoaded', ()=>{
     grad.addColorStop(1, '#f7d6a1');
 
     ctx.fillStyle = grad;
-    ctx.beginPath();
-    ctx.roundRect(-L, -W/2, L, W, 3);
-    ctx.fill();
+    ctx.beginPath(); ctx.roundRect(-L, -W/2, L, W, 3); ctx.fill();
 
-    // tip längst fram (nära 0)
-    ctx.fillStyle = '#f2f2f2';
+    ctx.fillStyle = '#f2f2f2';  // tip
     ctx.fillRect(-2, -W/2, 8, W);
 
     ctx.restore();
@@ -355,35 +380,41 @@ document.addEventListener('DOMContentLoaded', ()=>{
     if(!snapshot) return;
     drawTable(snapshot);
     drawBalls(snapshot);
-    drawCollected(snapshot);
+    renderTrays(snapshot);
     drawCueStick(snapshot);
     drawAim(snapshot);
   }
 
-  // input / aiming
-  function canvasPos(e){ const r=c.getBoundingClientRect(); return {x:(e.clientX-r.left)*(c.width/r.width), y:(e.clientY-r.top)*(c.height/r.height)}; }
+  // --- Input: tillåt drag utanför canvas (global mousemove) ---
+  function toCanvasPoint(clientX, clientY){
+    const r=c.getBoundingClientRect();
+    return { x: (clientX - r.left)*(c.width/r.width), y: (clientY - r.top)*(c.height/r.height) };
+  }
+  let onMove=null, onUp=null;
   c.addEventListener('mousedown', e=>{
     if(!snapshot || snapshot.waitingShot!==true || current!==selfId) return;
-    const pos = canvasPos(e);
-    aim.down=true; aim.sx=aim.ex=pos.x; aim.sy=aim.ey=pos.y;
+    const p = toCanvasPoint(e.clientX, e.clientY);
+    aim.down=true; aim.sx=aim.ex=p.x; aim.sy=aim.ey=p.y;
     if(snapshot.ballInHand) aim.placing=true;
+
+    onMove = (ev)=>{ const pp = toCanvasPoint(ev.clientX, ev.clientY); aim.ex=pp.x; aim.ey=pp.y; render(); };
+    onUp = (ev)=>{
+      if(!snapshot || current!==selfId || snapshot.waitingShot!==true) { cleanup(); return; }
+      const pp = toCanvasPoint(ev.clientX, ev.clientY); aim.ex=pp.x; aim.ey=pp.y;
+      const cue = snapshot.balls.find(b=>b.id===0); if(!cue){ cleanup(); return; }
+      const dx = cue.x - aim.ex, dy = cue.y - aim.ey;
+      const power = Math.min(1, Math.hypot(dx,dy)/160);
+      const place = snapshot.ballInHand && aim.placing ? {x:aim.ex, y:aim.ey} : null;
+      socket.emit('pool:shot', { roomId, dx, dy, power, place });
+      cleanup();
+    };
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp, { once:true });
   });
-  c.addEventListener('mousemove', e=>{
-    if(!snapshot) return;
-    const pos = canvasPos(e);
-    aim.ex=pos.x; aim.ey=pos.y;
-    render();
-  });
-  c.addEventListener('mouseup', e=>{
-    if(!snapshot || current!==selfId || snapshot.waitingShot!==true) return;
-    const pos = canvasPos(e); aim.ex=pos.x; aim.ey=pos.y;
-    const cue = snapshot.balls.find(b=>b.id===0); if(!cue) return;
-    const dx = cue.x - aim.ex, dy = cue.y - aim.ey;
-    const power = Math.min(1, Math.hypot(dx,dy)/160);
-    const place = snapshot.ballInHand && aim.placing ? {x:aim.ex, y:aim.ey} : null;
-    socket.emit('pool:shot', { roomId, dx, dy, power, place });
+  function cleanup(){
     aim.down=false; aim.placing=false; aim.power=0;
-  });
+    if(onMove) { window.removeEventListener('mousemove', onMove); onMove=null; }
+  }
 
   /* --- Matchflöde --- */
   socket.on('pool:match:start', ({roomId:r, opponent, players})=>{
