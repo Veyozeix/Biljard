@@ -1,0 +1,6 @@
+{
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": { "node": ">=18 <23" }
+}
