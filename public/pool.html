@@ -1,0 +1,333 @@
+<!doctype html>
+<html lang="sv">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>8-Ball Pool</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Nunito:wght@400;700;800&display=swap" rel="stylesheet">
+<script src="/socket.io/socket.io.js" defer></script>
+<style>
+:root{
+  --bg:#061a12; --card:#10261b; --accent:#e7ff6e; --muted:#a0b38f;
+  --btn:#21412f; --btn-hover:#29523c; --white:#e9f1e6; --border:#153b2a;
+}
+*{box-sizing:border-box}
+html,body{height:100%}
+body{
+  margin:0; background:var(--bg); color:var(--white);
+  font-family:Nunito, system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+  display:flex; align-items:flex-start; justify-content:center; padding:24px; min-height:100vh;
+}
+body.game{ padding:0; }
+.layout{width:min(1220px,96vw); display:grid; gap:16px}
+.layout.lobby{grid-template-columns: 280px min(900px, 92vw) 260px;}
+.layout.onecol{ grid-template-columns: min(900px, 92vw); width:100%; min-height:100vh; place-content:center; place-items:center; }
+@supports (min-height: 100dvh){ .layout.onecol{ min-height:100dvh; } }
+.card{ background:var(--card); border-radius:14px; padding:18px; box-shadow:0 10px 30px rgba(0,0,0,.25); border:1px solid var(--border); }
+h1{ text-align:center; font-size:56px; letter-spacing:6px; margin:0 0 14px; color:var(--accent); font-weight:800; }
+.row{display:flex; gap:12px}
+input[type="text"]{ flex:1; background:#081e15; border:2px solid #0f2a1f; outline:none; color:var(--white); padding:12px 14px; border-radius:8px; font-size:16px;}
+button{ background:var(--btn); border:none; color:var(--white); padding:12px 14px; border-radius:8px; font-weight:700; cursor:pointer; transition:.2s; }
+button:hover{background:var(--btn-hover)} button:active{transform:translateY(1px)}
+button[disabled]{opacity:.45; cursor:not-allowed}
+.muted{color:var(--muted); font-size:14px; margin-top:8px}
+.names{margin-top:8px; display:flex; gap:8px; flex-wrap:wrap}
+.pill{background:#0c2219; border:1px solid #183a2b; padding:6px 10px; border-radius:999px; font-size:13px}
+
+/* Chat */
+.chat{display:flex; flex-direction:column; height: 700px;}
+.chat h3{margin:6px 0 12px}
+.chat-log{ flex:1; overflow:auto; background:#081e15; border:1px solid #0f2a1f; border-radius:10px; padding:10px; white-space: pre-wrap; word-break: break-word; overflow-wrap:anywhere; overflow-x:hidden; }
+.msg{margin:6px 0} .msg .n{font-weight:800; margin-right:6px} .msg.sys{color: var(--accent); font-weight:800}
+.chat-input{ display:flex; flex-direction:column; gap:6px; margin-top:10px }
+.chat-input input{ width:100% }
+.chat-input button{ align-self:flex-end }
+
+/* Scoreboard */
+.scoreboard h3{ margin:6px 0 12px; color:var(--accent); }
+.scoreboard .item{ display:flex; justify-content:space-between; padding:8px 10px; background:#0b1f17; border:1px solid #143425; border-radius:10px; margin-bottom:8px; }
+.scoreboard .empty{ color:var(--muted); font-style:italic; }
+
+/* Game */
+#game .hud{display:flex; justify-content:space-between; align-items:center; margin:10px 0 16px}
+.canvas-wrap{display:grid; place-items:center}
+canvas{ background:#083223; border:2px solid #153b2a; border-radius:12px; width:900px; height:480px; max-width:92vw }
+
+.overlay{ position:absolute; inset:0; display:none; align-items:center; justify-content:center; background:rgba(6,26,18,.75); border-radius:12px; }
+.overlay .inner{ text-align:center; padding:24px; max-width:90%; }
+.big-title{ font-size:56px; letter-spacing:6px; color:var(--accent); font-weight:800; margin-bottom:12px; }
+.overlay .actions{display:flex; gap:10px; justify-content:center; margin-top:12px}
+.overlay .timer{color:var(--muted); margin-top:6px}
+</style>
+</head>
+<body>
+<div id="layout" class="layout lobby">
+  <!-- Chat -->
+  <div id="chatPanel" class="card chat">
+    <h3>Lobbychatt</h3>
+    <div id="chatLog" class="chat-log"></div>
+    <div class="chat-input">
+      <input id="chatText" type="text" placeholder="Skriv ett meddelande…" maxlength="500" />
+      <button id="chatSend">Skicka</button>
+    </div>
+  </div>
+
+  <!-- Mitte: lobby/game -->
+  <div class="card">
+    <h1>8-BALL POOL</h1>
+
+    <!-- Lobby -->
+    <div id="lobby">
+      <h2 style="margin:6px 0 14px">Spelkö</h2>
+      <div class="row">
+        <input id="name" type="text" placeholder="Skriv ditt namn" maxlength="18" />
+        <button id="join">Gå med i kön</button>
+      </div>
+      <div class="muted"><span id="count">0</span> spelare i kön</div>
+      <div id="names" class="names"></div>
+      <div style="margin-top:10px">
+        <button id="leave" style="display:none">Lämna kön</button>
+      </div>
+    </div>
+
+    <!-- Game -->
+    <div id="game" style="display:none; position:relative">
+      <div class="hud">
+        <div id="vs" style="font-weight:800"></div>
+        <div class="muted" id="turnHint"></div>
+        <button id="exit">Lämna match</button>
+      </div>
+      <div class="canvas-wrap">
+        <canvas id="tbl" width="1080" height="540"></canvas>
+      </div>
+      <div class="muted" id="status"></div>
+
+      <div id="overlay" class="overlay">
+        <div class="inner">
+          <div id="ovTitle" class="big-title">VINNARE VANN!!!</div>
+          <div class="actions" id="ovActions"></div>
+          <div class="timer" id="ovTimer"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Scoreboard -->
+  <div id="scoreWrap" class="card scoreboard">
+    <h3>SCOREBOARD (24H)</h3>
+    <div id="scoreList"></div>
+  </div>
+</div>
+
+<script>
+document.addEventListener('DOMContentLoaded', ()=>{
+  const el = id => document.getElementById(id);
+  const layout=el('layout'), chatPanel=el('chatPanel');
+  const lobby=el('lobby'), game=el('game'), vsEl=el('vs'), statusEl=el('status'), turnHint=el('turnHint');
+  const nameInput=el('name'), joinBtn=el('join'), leaveBtn=el('leave'), countEl=el('count'), namesEl=el('names');
+  const overlay=el('overlay'), ovTitle=el('ovTitle'), ovActions=el('ovActions'), ovTimer=el('ovTimer');
+  const chatLog=el('chatLog'), chatText=el('chatText'), chatSend=el('chatSend');
+  const scoreList=el('scoreList');
+
+  function updateJoin(){ joinBtn.disabled = nameInput.value.trim().length<1; }
+  nameInput.addEventListener('input', updateJoin); updateJoin();
+
+  const socket = io();
+
+  // chat (måste stå i kön)
+  let inQueue=false, cd=null, canSend=false;
+  function setChatEnabled(x){ chatText.disabled=!x; chatSend.disabled=!x; }
+  function startCooldown(s=5){
+    canSend=false; setChatEnabled(false);
+    let t=s, label='Skicka'; chatSend.textContent=`Vänta (${t})`;
+    cd=setInterval(()=>{ t--; chatSend.textContent=`Vänta (${t})`; if(t<=0){ clearInterval(cd); cd=null; chatSend.textContent=label; if(inQueue){ canSend=true; setChatEnabled(true); } } },1000);
+  }
+  setChatEnabled(false);
+  function appendMsg({name,text,ts}){ const d=document.createElement('div'); d.className='msg'; const t=new Date(ts||Date.now()).toLocaleTimeString(); d.innerHTML=`<span class="n">${name}</span><span class="t">${text}</span> <span class="muted" style="float:right">${t}</span>`; chatLog.appendChild(d); chatLog.scrollTop=chatLog.scrollHeight; }
+  function appendSys(text){ const d=document.createElement('div'); d.className='msg sys'; d.textContent=text; chatLog.appendChild(d); chatLog.scrollTop=chatLog.scrollHeight; }
+  chatSend.addEventListener('click', ()=>{ const text=chatText.value.trim(); if(!text||!inQueue||!canSend) return; socket.emit('chat:message',{text}); chatText.value=''; startCooldown(5); });
+  chatText.addEventListener('keydown', e=>{ if(e.key==='Enter') chatSend.click(); });
+  socket.on('chat:message', appendMsg);
+  socket.on('chat:system', appendSys);
+  socket.on('chat:error', msg=>{ appendSys(msg); });
+
+  // scoreboard
+  function renderScoreboard(list){
+    if(!Array.isArray(list)||list.length===0){ scoreList.innerHTML=`<div class="empty">Ingen har vunnit en match de senaste 24 timmarna.</div>`; return; }
+    scoreList.innerHTML = list.map(it=>`<div class="item"><span>${it.name}</span><span>${it.count} ${it.count===1?'Match':'Matcher'}</span></div>`).join('');
+  }
+  socket.on('score:update', renderScoreboard);
+
+  // queue
+  function resetLobbyBtns(){ nameInput.disabled=false; updateJoin(); leaveBtn.style.display='none'; }
+  joinBtn.addEventListener('click', ()=>{ const n=nameInput.value.trim(); if(!n)return; socket.emit('queue:join', n); leaveBtn.style.display='inline-block'; joinBtn.disabled=true; nameInput.disabled=true; });
+  leaveBtn.addEventListener('click', ()=> socket.emit('queue:leave'));
+  socket.on('queue:joined', ()=>{ inQueue=true; if(!cd){ canSend=true; setChatEnabled(true); } });
+  socket.on('queue:left', ()=>{ inQueue=false; canSend=false; setChatEnabled(false); resetLobbyBtns(); });
+  socket.on('queue:update', ({count,names})=>{ countEl.textContent=count; namesEl.innerHTML = names.map(n=>`<span class="pill">${n}</span>`).join(''); });
+
+  // layout helpers
+  function setLobbyLayout(){ document.body.classList.remove('game'); layout.classList.add('lobby'); layout.classList.remove('onecol'); chatPanel.style.display='flex'; el('scoreWrap').style.display='block'; }
+  function setGameLayout(){ document.body.classList.add('game'); layout.classList.remove('lobby'); layout.classList.add('onecol'); chatPanel.style.display='none'; el('scoreWrap').style.display='none'; }
+
+  // canvas & render
+  const c = el('tbl'); const ctx = c.getContext('2d');
+  let roomId=null, selfId=null, oppId=null, current=null, snapshot=null;
+  let aim = { down:false, sx:0, sy:0, ex:0, ey:0, power:0, placing:false };
+
+  function drawTable(s){
+    // bord (träkant + filt)
+    ctx.clearRect(0,0,c.width,c.height);
+    ctx.fillStyle = '#1e3a2b'; ctx.fillRect(0,0,c.width,c.height); // trä
+    ctx.fillStyle = '#0d6b47'; ctx.fillRect(s.m, s.m, c.width-2*s.m, c.height-2*s.m); // filt
+    // prick i mitten
+    ctx.globalAlpha=.3; ctx.fillStyle='#e7ff6e'; ctx.fillRect(c.width/2-1, s.m, 2, c.height-2*s.m); ctx.globalAlpha=1;
+    // fickor
+    ctx.fillStyle = '#000';
+    for(const p of s.pockets){ ctx.beginPath(); ctx.arc(p.x, p.y, s.pr, 0, Math.PI*2); ctx.fill(); }
+  }
+
+  function ballColor(id){
+    if(id===0) return '#ffffff';
+    if(id===8) return '#222222';
+    if(id>=1 && id<=7) return '#ffd54a';       // solids – gul
+    if(id>=9 && id<=15) return '#4fc3f7';      // stripes – blå
+    return '#e9f1e6';
+  }
+
+  function drawBalls(s){
+    for(const b of s.balls){
+      if(b.potted) continue;
+      ctx.fillStyle = ballColor(b.id);
+      ctx.beginPath(); ctx.arc(b.x, b.y, s.r, 0, Math.PI*2); ctx.fill();
+      // stripe markering
+      if(b.id>=9 && b.id<=15){
+        ctx.fillStyle='#0d6b47';
+        ctx.beginPath(); ctx.arc(b.x, b.y, s.r*0.55, 0, Math.PI*2); ctx.fill();
+        ctx.fillStyle=ballColor(b.id);
+      }
+      // nummer-dot
+      if(b.id!==0){
+        ctx.fillStyle='#000'; ctx.beginPath(); ctx.arc(b.x, b.y, s.r*0.45, 0, Math.PI*2); ctx.fill();
+        ctx.fillStyle='#fff'; ctx.font='10px Nunito'; ctx.textAlign='center'; ctx.textBaseline='middle';
+        ctx.fillText(String(b.id), b.x, b.y+0.5);
+      }
+    }
+  }
+
+  function drawAim(s){
+    if(!snapshot || snapshot.waitingShot!==true) return;
+    if(current!==selfId) return; // sikta bara om min tur
+    const cue = s.balls.find(b=>b.id===0);
+    if(!cue || cue.potted) return;
+
+    // ball-in-hand: rita “place cue” indikator
+    if(s.ballInHand){
+      ctx.strokeStyle='#e7ff6e'; ctx.setLineDash([6,6]); ctx.lineWidth=2;
+      ctx.beginPath(); ctx.arc(aim.ex||cue.x, aim.ey||cue.y, s.r, 0, Math.PI*2); ctx.stroke(); ctx.setLineDash([]);
+    }
+
+    if(aim.down){
+      // linje och kraft
+      ctx.strokeStyle='#fff'; ctx.lineWidth=2; ctx.setLineDash([5,4]);
+      ctx.beginPath(); ctx.moveTo(cue.x, cue.y); ctx.lineTo(aim.ex, aim.ey); ctx.stroke(); ctx.setLineDash([]);
+      // power bar
+      const p = Math.min(1, Math.hypot(aim.ex-cue.x, aim.ey-cue.y)/120);
+      aim.power = p;
+      ctx.fillStyle='#e7ff6e';
+      const w = 160, h = 10, x = c.width - w - 20, y = 20;
+      ctx.fillRect(x,y,w*h/10*0, h); // bg placeholder
+      ctx.strokeStyle='#e7ff6e'; ctx.strokeRect(x,y,w,h);
+      ctx.fillRect(x,y,w*p, h);
+    }
+  }
+
+  function render(){
+    if(!snapshot) return;
+    drawTable(snapshot);
+    drawBalls(snapshot);
+    drawAim(snapshot);
+  }
+
+  // input / aiming
+  function canvasPos(e){ const r=c.getBoundingClientRect(); return {x:(e.clientX-r.left)*(c.width/r.width), y:(e.clientY-r.top)*(c.height/r.height)}; }
+  c.addEventListener('mousedown', e=>{
+    if(!snapshot || snapshot.waitingShot!==true || current!==selfId) return;
+    const pos = canvasPos(e);
+    aim.down=true; aim.sx=aim.ex=pos.x; aim.sy=aim.ey=pos.y;
+    // vid ball-in-hand, börja placera
+    if(snapshot.ballInHand) aim.placing=true;
+  });
+  c.addEventListener('mousemove', e=>{
+    if(!snapshot) return;
+    const pos = canvasPos(e);
+    aim.ex=pos.x; aim.ey=pos.y;
+    render();
+  });
+  c.addEventListener('mouseup', e=>{
+    if(!snapshot || current!==selfId || snapshot.waitingShot!==true) return;
+    const pos = canvasPos(e); aim.ex=pos.x; aim.ey=pos.y;
+    const cue = snapshot.balls.find(b=>b.id===0);
+    if(!cue) return;
+    const dx = cue.x - aim.ex, dy = cue.y - aim.ey; // slå från kö mot bollen
+    const power = Math.min(1, Math.hypot(dx,dy)/160);
+    const place = snapshot.ballInHand && aim.placing ? {x:aim.ex, y:aim.ey} : null;
+    socket.emit('pool:shot', { roomId, dx, dy, power, place });
+    aim.down=false; aim.placing=false; aim.power=0;
+  });
+
+  // state & match lifecycle
+  socket.on('pool:match:start', ({roomId:r, opponent, players})=>{
+    roomId=r; selfId=players.selfId; oppId=players.oppId;
+    lobby.style.display='none'; game.style.display='block';
+    document.body.classList.add('game'); layout.classList.remove('lobby'); layout.classList.add('onecol');
+    chatPanel.style.display='none'; el('scoreWrap').style.display='none';
+    vsEl.textContent = `${(nameInput.value.trim()||'Du')} vs ${opponent}`;
+    statusEl.textContent='';
+  });
+
+  socket.on('pool:state', (s)=>{
+    snapshot=s; current=s.current;
+    turnHint.textContent = (current===selfId) ? 'Din tur' : 'Motståndarens tur';
+    render();
+  });
+
+  function backToLobby(){
+    game.style.display='none'; lobby.style.display='block';
+    document.body.classList.remove('game'); layout.classList.add('lobby'); layout.classList.remove('onecol');
+    chatPanel.style.display='flex'; el('scoreWrap').style.display='block';
+    roomId=null; snapshot=null; render();
+  }
+
+  let countdown=null;
+  socket.on('pool:match:end', ({winnerId, loserId, winnerName})=>{
+    ovTitle.textContent = `${winnerName||'Spelare'} VANN!!!`;
+    overlay.style.display='flex'; ovActions.innerHTML=''; ovTimer.textContent='';
+    const iWon = winnerId===selfId;
+
+    if(!iWon){
+      const b=document.createElement('button'); b.textContent='Tillbaka till kön'; b.onclick=backToLobby; ovActions.appendChild(b);
+      let t=10; ovTimer.textContent=`Tillbaka till kön om ${t} sekunder`;
+      countdown=setInterval(()=>{ t--; ovTimer.textContent=`Tillbaka till kön om ${t} sekunder`; if(t<=0){ clearInterval(countdown); countdown=null; backToLobby(); overlay.style.display='none'; } },1000);
+    } else {
+      const b=document.createElement('button'); b.textContent='Tillbaka till kön'; b.onclick=()=>{ socket.emit('winner:cancel'); backToLobby(); overlay.style.display='none'; }; ovActions.appendChild(b);
+      let t=30; ovTimer.textContent=`Ny runda startar inom ${t} sekunder om kö finns`;
+      countdown=setInterval(()=>{ t--; ovTimer.textContent=`Ny runda startar inom ${t} sekunder om kö finns`; if(t<=0){ clearInterval(countdown); countdown=null; backToLobby(); overlay.style.display='none'; } },1000);
+      socket.once('winner:timeout', ()=>{ if(countdown){ clearInterval(countdown); countdown=null; } backToLobby(); overlay.style.display='none'; });
+    }
+  });
+
+  socket.on('pool:opponent-left', ()=>{ backToLobby(); });
+
+  // init snapshots
+  socket.on('queue:update', ({count,names})=>{ countEl.textContent=count; namesEl.innerHTML = names.map(n=>`<span class="pill">${n}</span>`).join(''); });
+  socket.on('connect', ()=>{}); // snapshots kommer server-side
+
+  // exit btn
+  el('exit').addEventListener('click', ()=> window.location.reload());
+});
+</script>
+</body>
+</html>
