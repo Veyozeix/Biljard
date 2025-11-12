@@ -21,10 +21,12 @@ body{
   display:flex; align-items:flex-start; justify-content:center; padding:24px; min-height:100vh;
 }
 body.game{ padding:0; }
+
 .layout{width:min(1220px,96vw); display:grid; gap:16px}
 .layout.lobby{grid-template-columns: 280px min(900px, 92vw) 260px;}
 .layout.onecol{ grid-template-columns: min(900px, 92vw); width:100%; min-height:100vh; place-content:center; place-items:center; }
 @supports (min-height: 100dvh){ .layout.onecol{ min-height:100dvh; } }
+
 .card{ background:var(--card); border-radius:14px; padding:18px; box-shadow:0 10px 30px rgba(0,0,0,.25); border:1px solid var(--border); }
 h1{ text-align:center; font-size:56px; letter-spacing:6px; margin:0 0 14px; color:var(--accent); font-weight:800; }
 .row{display:flex; gap:12px}
@@ -136,7 +138,7 @@ document.addEventListener('DOMContentLoaded', ()=>{
 
   const socket = io();
 
-  // chat (måste stå i kön)
+  /* --- Chat: i kön + cooldown --- */
   let inQueue=false, cd=null, canSend=false;
   function setChatEnabled(x){ chatText.disabled=!x; chatSend.disabled=!x; }
   function startCooldown(s=5){
@@ -153,101 +155,172 @@ document.addEventListener('DOMContentLoaded', ()=>{
   socket.on('chat:system', appendSys);
   socket.on('chat:error', msg=>{ appendSys(msg); });
 
-  // scoreboard
+  /* --- Scoreboard render --- */
   function renderScoreboard(list){
-    if(!Array.isArray(list)||list.length===0){ scoreList.innerHTML=`<div class="empty">Ingen har vunnit en match de senaste 24 timmarna.</div>`; return; }
-    scoreList.innerHTML = list.map(it=>`<div class="item"><span>${it.name}</span><span>${it.count} ${it.count===1?'Match':'Matcher'}</span></div>`).join('');
+    if(!Array.isArray(list)||list.length===0){
+      scoreList.innerHTML = `<div class="empty">Ingen har vunnit en match de senaste 24 timmarna.</div>`;
+      return;
+    }
+    scoreList.innerHTML = list.map(it => `<div class="item"><span>${it.name}</span><span>${it.count} ${it.count===1?'Match':'Matcher'}</span></div>`).join('');
   }
   socket.on('score:update', renderScoreboard);
 
-  // queue
+  /* --- Kö UI --- */
   function resetLobbyBtns(){ nameInput.disabled=false; updateJoin(); leaveBtn.style.display='none'; }
   joinBtn.addEventListener('click', ()=>{ const n=nameInput.value.trim(); if(!n)return; socket.emit('queue:join', n); leaveBtn.style.display='inline-block'; joinBtn.disabled=true; nameInput.disabled=true; });
   leaveBtn.addEventListener('click', ()=> socket.emit('queue:leave'));
   socket.on('queue:joined', ()=>{ inQueue=true; if(!cd){ canSend=true; setChatEnabled(true); } });
-  socket.on('queue:left', ()=>{ inQueue=false; canSend=false; setChatEnabled(false); resetLobbyBtns(); });
+  socket.on('queue:left',  ()=>{ inQueue=false; canSend=false; setChatEnabled(false); resetLobbyBtns(); });
   socket.on('queue:update', ({count,names})=>{ countEl.textContent=count; namesEl.innerHTML = names.map(n=>`<span class="pill">${n}</span>`).join(''); });
 
-  // layout helpers
+  /* --- Layout helpers --- */
   function setLobbyLayout(){ document.body.classList.remove('game'); layout.classList.add('lobby'); layout.classList.remove('onecol'); chatPanel.style.display='flex'; el('scoreWrap').style.display='block'; }
   function setGameLayout(){ document.body.classList.add('game'); layout.classList.remove('lobby'); layout.classList.add('onecol'); chatPanel.style.display='none'; el('scoreWrap').style.display='none'; }
 
-  // canvas & render
+  /* --- Canvas & render --- */
   const c = el('tbl'); const ctx = c.getContext('2d');
   let roomId=null, selfId=null, oppId=null, current=null, snapshot=null;
   let aim = { down:false, sx:0, sy:0, ex:0, ey:0, power:0, placing:false };
 
+  // polyfill för roundRect om saknas
+  if (!CanvasRenderingContext2D.prototype.roundRect) {
+    CanvasRenderingContext2D.prototype.roundRect = function(x,y,w,h,r){
+      const rr = Math.min(r, w/2, h/2);
+      this.beginPath();
+      this.moveTo(x+rr,y);
+      this.arcTo(x+w,y,x+w,y+h,rr);
+      this.arcTo(x+w,y+h,x,y+h,rr);
+      this.arcTo(x,y+h,x,y,rr);
+      this.arcTo(x,y,x+w,y,rr);
+      this.closePath();
+    };
+  }
+
   function drawTable(s){
-    // bord (träkant + filt)
     ctx.clearRect(0,0,c.width,c.height);
-    ctx.fillStyle = '#1e3a2b'; ctx.fillRect(0,0,c.width,c.height); // trä
-    ctx.fillStyle = '#0d6b47'; ctx.fillRect(s.m, s.m, c.width-2*s.m, c.height-2*s.m); // filt
-    // prick i mitten
-    ctx.globalAlpha=.3; ctx.fillStyle='#e7ff6e'; ctx.fillRect(c.width/2-1, s.m, 2, c.height-2*s.m); ctx.globalAlpha=1;
+    // trä
+    const woodGrad = ctx.createLinearGradient(0,0,0,c.height);
+    woodGrad.addColorStop(0, '#5a2f19'); woodGrad.addColorStop(1, '#3b1d0f');
+    ctx.fillStyle = woodGrad; ctx.fillRect(0,0,c.width,c.height);
+    // rails
+    ctx.fillStyle = '#165239';
+    ctx.fillRect(0,0,c.width,s.m);
+    ctx.fillRect(0,c.height-s.m,c.width,s.m);
+    ctx.fillRect(0,0,s.m,c.height);
+    ctx.fillRect(c.width-s.m,0,s.m,c.height);
+    // filt
+    ctx.fillStyle = '#0f6b47';
+    ctx.fillRect(s.m, s.m, c.width-2*s.m, c.height-2*s.m);
     // fickor
-    ctx.fillStyle = '#000';
-    for(const p of s.pockets){ ctx.beginPath(); ctx.arc(p.x, p.y, s.pr, 0, Math.PI*2); ctx.fill(); }
+    for(const p of s.pockets){
+      ctx.beginPath(); ctx.arc(p.x+2, p.y+2, s.pr, 0, Math.PI*2);
+      ctx.fillStyle='rgba(0,0,0,0.35)'; ctx.fill();
+      ctx.beginPath(); ctx.arc(p.x, p.y, s.pr, 0, Math.PI*2);
+      ctx.fillStyle='#000'; ctx.fill();
+    }
   }
 
   function ballColor(id){
-    if(id===0) return '#ffffff';
-    if(id===8) return '#222222';
-    if(id>=1 && id<=7) return '#ffd54a';       // solids – gul
-    if(id>=9 && id<=15) return '#4fc3f7';      // stripes – blå
+    if(id===0) return '#f7f1de';
+    if(id===8) return '#222';
+    if(id>=1 && id<=7) return '#ffad33';
+    if(id>=9 && id<=15) return '#4aa3ff';
     return '#e9f1e6';
+  }
+
+  function drawBallShaded(x, y, r, base, number){
+    // skugga
+    ctx.beginPath(); ctx.arc(x+1.5,y+1.5,r,0,Math.PI*2);
+    ctx.fillStyle='rgba(0,0,0,0.25)'; ctx.fill();
+    // kropp (radial grad)
+    const g = ctx.createRadialGradient(x-r*0.4, y-r*0.4, r*0.2, x, y, r);
+    g.addColorStop(0, '#ffffff');
+    g.addColorStop(0.15, base);
+    g.addColorStop(1, '#1e1e1e');
+    ctx.beginPath(); ctx.arc(x,y,r,0,Math.PI*2); ctx.fillStyle=g; ctx.fill();
+    // stripes
+    if(number>=9 && number<=15){
+      ctx.beginPath(); ctx.arc(x,y,r*0.67,0,Math.PI*2);
+      ctx.fillStyle='#f1f9f6'; ctx.fill();
+    }
+    // nummerplatta
+    if(number!==0){
+      ctx.beginPath(); ctx.arc(x,y,r*0.45,0,Math.PI*2); ctx.fillStyle='#f1f1f1'; ctx.fill();
+      ctx.fillStyle='#000'; ctx.font=`${Math.floor(r*1.1)}px Nunito`; ctx.textAlign='center'; ctx.textBaseline='middle';
+      ctx.fillText(String(number), x, y+0.5);
+    }
   }
 
   function drawBalls(s){
     for(const b of s.balls){
       if(b.potted) continue;
-      ctx.fillStyle = ballColor(b.id);
-      ctx.beginPath(); ctx.arc(b.x, b.y, s.r, 0, Math.PI*2); ctx.fill();
-      // stripe markering
-      if(b.id>=9 && b.id<=15){
-        ctx.fillStyle='#0d6b47';
-        ctx.beginPath(); ctx.arc(b.x, b.y, s.r*0.55, 0, Math.PI*2); ctx.fill();
-        ctx.fillStyle=ballColor(b.id);
-      }
-      // nummer-dot
-      if(b.id!==0){
-        ctx.fillStyle='#000'; ctx.beginPath(); ctx.arc(b.x, b.y, s.r*0.45, 0, Math.PI*2); ctx.fill();
-        ctx.fillStyle='#fff'; ctx.font='10px Nunito'; ctx.textAlign='center'; ctx.textBaseline='middle';
-        ctx.fillText(String(b.id), b.x, b.y+0.5);
-      }
+      drawBallShaded(b.x, b.y, s.r, ballColor(b.id), b.id);
     }
+  }
+
+  function drawCueStick(s){
+    if(!snapshot || snapshot.waitingShot!==true) return;
+    if(current!==selfId) return;
+    const cue = s.balls.find(b=>b.id===0);
+    if(!cue || cue.potted) return;
+
+    const dx = cue.x - (aim.ex||cue.x);
+    const dy = cue.y - (aim.ey||cue.y);
+    const ang = Math.atan2(dy, dx);
+
+    const offset = 18 + (aim.power||0)*40; // bakdrag vs kraft
+    const px = cue.x + Math.cos(ang) * offset;
+    const py = cue.y + Math.sin(ang) * offset;
+
+    const L = 260, W = 7;
+    ctx.save();
+    ctx.translate(px, py);
+    ctx.rotate(ang);
+
+    const grad = ctx.createLinearGradient(0, -W/2, -L, -W/2);
+    grad.addColorStop(0, '#f7d6a1');
+    grad.addColorStop(0.05, '#eac089');
+    grad.addColorStop(0.8, '#b07d45');
+    grad.addColorStop(1, '#111');
+
+    ctx.fillStyle = grad;
+    ctx.beginPath();
+    ctx.roundRect(-L, -W/2, L, W, 3);
+    ctx.fill();
+
+    ctx.fillStyle = '#f2f2f2';
+    ctx.fillRect(-8, -W/2, 8, W);
+
+    ctx.restore();
   }
 
   function drawAim(s){
     if(!snapshot || snapshot.waitingShot!==true) return;
-    if(current!==selfId) return; // sikta bara om min tur
+    if(current!==selfId) return;
     const cue = s.balls.find(b=>b.id===0);
     if(!cue || cue.potted) return;
 
-    // ball-in-hand: rita “place cue” indikator
-    if(s.ballInHand){
-      ctx.strokeStyle='#e7ff6e'; ctx.setLineDash([6,6]); ctx.lineWidth=2;
-      ctx.beginPath(); ctx.arc(aim.ex||cue.x, aim.ey||cue.y, s.r, 0, Math.PI*2); ctx.stroke(); ctx.setLineDash([]);
-    }
+    ctx.setLineDash([6,5]);
+    ctx.strokeStyle = 'rgba(255,255,255,0.6)';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(cue.x, cue.y);
+    ctx.lineTo(aim.ex||cue.x, aim.ey||cue.y);
+    ctx.stroke();
+    ctx.setLineDash([]);
 
-    if(aim.down){
-      // linje och kraft
-      ctx.strokeStyle='#fff'; ctx.lineWidth=2; ctx.setLineDash([5,4]);
-      ctx.beginPath(); ctx.moveTo(cue.x, cue.y); ctx.lineTo(aim.ex, aim.ey); ctx.stroke(); ctx.setLineDash([]);
-      // power bar
-      const p = Math.min(1, Math.hypot(aim.ex-cue.x, aim.ey-cue.y)/120);
-      aim.power = p;
-      ctx.fillStyle='#e7ff6e';
-      const w = 160, h = 10, x = c.width - w - 20, y = 20;
-      ctx.fillRect(x,y,w*h/10*0, h); // bg placeholder
-      ctx.strokeStyle='#e7ff6e'; ctx.strokeRect(x,y,w,h);
-      ctx.fillRect(x,y,w*p, h);
-    }
+    const p = Math.min(1, Math.hypot((aim.ex||cue.x)-cue.x, (aim.ey||cue.y)-cue.y)/160);
+    aim.power = p;
+    const w = 160, h = 10, x = c.width - w - 20, y = 20;
+    ctx.strokeStyle = '#e7ff6e'; ctx.lineWidth=2; ctx.strokeRect(x,y,w,h);
+    ctx.fillStyle = '#e7ff6e'; ctx.fillRect(x,y,w*p,h);
   }
 
   function render(){
     if(!snapshot) return;
     drawTable(snapshot);
     drawBalls(snapshot);
+    drawCueStick(snapshot);
     drawAim(snapshot);
   }
 
@@ -257,7 +330,6 @@ document.addEventListener('DOMContentLoaded', ()=>{
     if(!snapshot || snapshot.waitingShot!==true || current!==selfId) return;
     const pos = canvasPos(e);
     aim.down=true; aim.sx=aim.ex=pos.x; aim.sy=aim.ey=pos.y;
-    // vid ball-in-hand, börja placera
     if(snapshot.ballInHand) aim.placing=true;
   });
   c.addEventListener('mousemove', e=>{
@@ -269,21 +341,19 @@ document.addEventListener('DOMContentLoaded', ()=>{
   c.addEventListener('mouseup', e=>{
     if(!snapshot || current!==selfId || snapshot.waitingShot!==true) return;
     const pos = canvasPos(e); aim.ex=pos.x; aim.ey=pos.y;
-    const cue = snapshot.balls.find(b=>b.id===0);
-    if(!cue) return;
-    const dx = cue.x - aim.ex, dy = cue.y - aim.ey; // slå från kö mot bollen
+    const cue = snapshot.balls.find(b=>b.id===0); if(!cue) return;
+    const dx = cue.x - aim.ex, dy = cue.y - aim.ey;
     const power = Math.min(1, Math.hypot(dx,dy)/160);
     const place = snapshot.ballInHand && aim.placing ? {x:aim.ex, y:aim.ey} : null;
     socket.emit('pool:shot', { roomId, dx, dy, power, place });
     aim.down=false; aim.placing=false; aim.power=0;
   });
 
-  // state & match lifecycle
+  /* --- Matchflöde --- */
   socket.on('pool:match:start', ({roomId:r, opponent, players})=>{
     roomId=r; selfId=players.selfId; oppId=players.oppId;
     lobby.style.display='none'; game.style.display='block';
-    document.body.classList.add('game'); layout.classList.remove('lobby'); layout.classList.add('onecol');
-    chatPanel.style.display='none'; el('scoreWrap').style.display='none';
+    setGameLayout();
     vsEl.textContent = `${(nameInput.value.trim()||'Du')} vs ${opponent}`;
     statusEl.textContent='';
   });
@@ -296,8 +366,7 @@ document.addEventListener('DOMContentLoaded', ()=>{
 
   function backToLobby(){
     game.style.display='none'; lobby.style.display='block';
-    document.body.classList.remove('game'); layout.classList.add('lobby'); layout.classList.remove('onecol');
-    chatPanel.style.display='flex'; el('scoreWrap').style.display='block';
+    setLobbyLayout();
     roomId=null; snapshot=null; render();
   }
 
@@ -321,12 +390,15 @@ document.addEventListener('DOMContentLoaded', ()=>{
 
   socket.on('pool:opponent-left', ()=>{ backToLobby(); });
 
-  // init snapshots
+  // snapshots vid anslutning hanteras server-side (queue:update, score:update)
   socket.on('queue:update', ({count,names})=>{ countEl.textContent=count; namesEl.innerHTML = names.map(n=>`<span class="pill">${n}</span>`).join(''); });
-  socket.on('connect', ()=>{}); // snapshots kommer server-side
 
-  // exit btn
+  // Exit
   el('exit').addEventListener('click', ()=> window.location.reload());
+
+  // Layout helpers
+  function setLobbyLayout(){ document.body.classList.remove('game'); layout.classList.add('lobby'); layout.classList.remove('onecol'); chatPanel.style.display='flex'; el('scoreWrap').style.display='block'; }
+  function setGameLayout(){ document.body.classList.add('game'); layout.classList.remove('lobby'); layout.classList.add('onecol'); chatPanel.style.display='none'; el('scoreWrap').style.display='none'; }
 });
 </script>
 </body>
