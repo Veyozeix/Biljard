@@ -57,17 +57,26 @@ button[disabled]{opacity:.45; cursor:not-allowed}
 .canvas-wrap{display:grid; place-items:center; position:relative}
 canvas{ background:#083223; border:2px solid #153b2a; border-radius:12px; width:900px; height:480px; max-width:92vw }
 
-/* Trays (vänster/höger om bordet) */
+/* Trays (vänster/höger om bordet) – EN RAD/POST */
 .tray{
-  position:absolute; top:8px; bottom:8px; width:140px;
-  display:flex; flex-direction:column; gap:8px;
-  padding:10px; background:#0b1f17; border:1px solid #143425; border-radius:12px;
+  position:absolute; top:8px; bottom:8px; width:200px;
+  display:flex; flex-direction:column; gap:10px;
+  padding:12px; background:#0b1f17; border:1px solid #143425; border-radius:12px;
+  overflow:auto;
 }
 .tray h4{ margin:0; font-weight:800; color:var(--accent); text-align:center }
-.tray .grid{ display:grid; grid-template-columns: repeat(3, 1fr); gap:8px; align-content:start }
+.tray .list{ display:flex; flex-direction:column; gap:8px; }
+.tray .row{
+  display:grid; grid-template-columns: 28px 1fr; gap:10px; align-items:center;
+  padding:6px 8px; border:1px solid #143425; border-radius:10px; background:#0d231a;
+}
+.tray .row canvas{ width:28px; height:28px; display:block; }
+.tray .row .lbl{ font-weight:700; color:#e9f1e6; }
+
 .tray-left{ right:100%; margin-right:10px }
 .tray-right{ left:100%;  margin-left:10px }
 
+/* Overlay */
 .overlay{ position:absolute; inset:0; display:none; align-items:center; justify-content:center; background:rgba(6,26,18,.75); border-radius:12px; }
 .overlay .inner{ text-align:center; padding:24px; max-width:90%; }
 .big-title{ font-size:56px; letter-spacing:6px; color:var(--accent); font-weight:800; margin-bottom:12px; }
@@ -112,12 +121,12 @@ canvas{ background:#083223; border:2px solid #153b2a; border-radius:12px; width:
         <!-- trays -->
         <div class="tray tray-left">
           <h4 id="trayLeftName">Spelare A</h4>
-          <div id="trayLeftGrid" class="grid"></div>
+          <div id="trayLeftList" class="list"></div>
         </div>
         <canvas id="tbl" width="1080" height="540"></canvas>
         <div class="tray tray-right">
           <h4 id="trayRightName">Spelare B</h4>
-          <div id="trayRightGrid" class="grid"></div>
+          <div id="trayRightList" class="list"></div>
         </div>
       </div>
 
@@ -150,7 +159,7 @@ document.addEventListener('DOMContentLoaded', ()=>{
   const chatLog=el('chatLog'), chatText=el('chatText'), chatSend=el('chatSend');
   const scoreList=el('scoreList');
   const trayLeftName=el('trayLeftName'), trayRightName=el('trayRightName');
-  const trayLeftGrid=el('trayLeftGrid'), trayRightGrid=el('trayRightGrid');
+  const trayLeftList=el('trayLeftList'), trayRightList=el('trayRightList');
 
   function updateJoin(){ joinBtn.disabled = nameInput.value.trim().length<1; }
   nameInput.addEventListener('input', updateJoin); updateJoin();
@@ -202,7 +211,7 @@ document.addEventListener('DOMContentLoaded', ()=>{
 
   let aim = { down:false, sx:0, sy:0, ex:0, ey:0, power:0, placing:false };
 
-  // polyfill roundRect
+  // roundRect polyfill
   if (!CanvasRenderingContext2D.prototype.roundRect) {
     CanvasRenderingContext2D.prototype.roundRect = function(x,y,w,h,r){
       const rr = Math.min(r, w/2, h/2);
@@ -264,10 +273,10 @@ document.addEventListener('DOMContentLoaded', ()=>{
       ctx.beginPath(); ctx.arc(x,y,r*0.67,0,Math.PI*2);
       ctx.fillStyle='#f1f9f6'; ctx.fill();
     }
-    // nummerplatta
+    // nummerplatta (alltid vit platta, svart text — 8:an syns tydligt)
     if(number!==0){
       ctx.beginPath(); ctx.arc(x,y,r*0.45,0,Math.PI*2); ctx.fillStyle='#f1f1f1'; ctx.fill();
-      ctx.fillStyle = number===8 ? '#000' : '#000'; // 8:an svart siffra på vit platta
+      ctx.fillStyle = '#000';
       ctx.font=`${Math.floor(r*1.1)}px Nunito`; ctx.textAlign='center'; ctx.textBaseline='middle';
       ctx.fillText(String(number), x, y+0.5);
     }
@@ -280,45 +289,41 @@ document.addEventListener('DOMContentLoaded', ()=>{
     }
   }
 
-  // trays: rendera sänkta bollar och namn
+  // TRAYS – en rad per boll med liten ikon
   function renderTrays(s){
     trayLeftName.textContent = s.names[s.players[0]] || 'Spelare';
     trayRightName.textContent = s.names[s.players[1]] || 'Spelare';
-    function fill(grid, arr){
-      grid.innerHTML = '';
-      const r = 12; // ikon-storlek i tray
-      for (const num of (arr||[]).slice().sort((a,b)=>a-b)) {
-        const cnv = document.createElement('canvas');
-        cnv.width = cnv.height = r*2+6;
-        const c2 = cnv.getContext('2d');
-        function drawIcon(){
-          c2.clearRect(0,0,cnv.width,cnv.height);
-          // liten skugga
-          c2.beginPath(); c2.arc(r+3,r+3,r,0,Math.PI*2); c2.fillStyle='rgba(0,0,0,.25)'; c2.fill();
-          const g = c2.createRadialGradient(r- r*0.3, r- r*0.3, r*0.2, r, r, r);
-          g.addColorStop(0,'#fff');
-          g.addColorStop(0.15, COLORS[num] || '#e9f1e6');
-          g.addColorStop(1,'#1e1e1e');
-          c2.beginPath(); c2.arc(r+3,r+3,r,0,Math.PI*2); c2.fillStyle=g; c2.fill();
-          if(num>=9 && num<=15){
-            c2.beginPath(); c2.arc(r+3,r+3,r*0.67,0,Math.PI*2); c2.fillStyle='#f1f9f6'; c2.fill();
-          }
-          if(num!==0){
-            c2.beginPath(); c2.arc(r+3,r+3,r*0.45,0,Math.PI*2); c2.fillStyle='#f1f1f1'; c2.fill();
-            c2.fillStyle='#000';
-            c2.font=`${Math.floor(r*1.1)}px Nunito`; c2.textAlign='center'; c2.textBaseline='middle';
-            c2.fillText(String(num), r+3, r+3.5);
-          }
-        }
-        drawIcon();
-        grid.appendChild(cnv);
-      }
+
+    function rowFor(num){
+      const wrap = document.createElement('div');
+      wrap.className = 'row';
+      const icon = document.createElement('canvas');
+      icon.width = icon.height = 30;
+      const c2 = icon.getContext('2d');
+      const r = 12;
+      // liten skugga
+      c2.beginPath(); c2.arc(15,15,r,0,Math.PI*2); c2.fillStyle='rgba(0,0,0,.25)'; c2.fill();
+      const g = c2.createRadialGradient(15-r*0.3, 15-r*0.3, r*0.2, 15, 15, r);
+      g.addColorStop(0,'#fff'); g.addColorStop(0.15, COLORS[num] || '#e9f1e6'); g.addColorStop(1,'#1e1e1e');
+      c2.beginPath(); c2.arc(15,15,r,0,Math.PI*2); c2.fillStyle=g; c2.fill();
+      if(num>=9 && num<=15){ c2.beginPath(); c2.arc(15,15,r*0.67,0,Math.PI*2); c2.fillStyle='#f1f9f6'; c2.fill(); }
+      if(num!==0){ c2.beginPath(); c2.arc(15,15,r*0.45,0,Math.PI*2); c2.fillStyle='#f1f1f1'; c2.fill();
+        c2.fillStyle='#000'; c2.font='13px Nunito'; c2.textAlign='center'; c2.textBaseline='middle'; c2.fillText(String(num),15,15.5); }
+      const lbl = document.createElement('div');
+      lbl.className='lbl'; lbl.textContent = `Boll ${num}`;
+      wrap.appendChild(icon); wrap.appendChild(lbl);
+      return wrap;
     }
-    fill(trayLeftGrid,  s.pottedBy[s.players[0]]);
-    fill(trayRightGrid, s.pottedBy[s.players[1]]);
+
+    function fill(listEl, arr){
+      listEl.innerHTML = '';
+      (arr || []).slice().sort((a,b)=>a-b).forEach(n => listEl.appendChild(rowFor(n)));
+    }
+    fill(trayLeftList,  s.pottedBy[s.players[0]]);
+    fill(trayRightList, s.pottedBy[s.players[1]]);
   }
 
-  // Cue bakom bollen (rätt riktning)
+  // Cue bakom bollen (rätt riktning) + power
   function drawCueStick(s){
     if(!snapshot || snapshot.waitingShot!==true) return;
     if(current!==selfId) return;
@@ -329,7 +334,6 @@ document.addEventListener('DOMContentLoaded', ()=>{
     const dy = cue.y - (aim.ey||cue.y);
     const ang = Math.atan2(dy, dx);
 
-    // placera STICKAN BAKOM bollen (negativt offset)
     const offset = 18 + (aim.power||0)*40;
     const px = cue.x - Math.cos(ang) * offset;
     const py = cue.y - Math.sin(ang) * offset;
@@ -383,14 +387,46 @@ document.addEventListener('DOMContentLoaded', ()=>{
     renderTrays(snapshot);
     drawCueStick(snapshot);
     drawAim(snapshot);
+
+    // BONUS #5: tydlig cursor när ball-in-hand
+    if (snapshot.waitingShot && current===selfId && snapshot.ballInHand) {
+      c.style.cursor = 'crosshair';
+    } else {
+      c.style.cursor = 'default';
+    }
   }
 
-  // --- Input: tillåt drag utanför canvas (global mousemove) ---
+  // passiv riktning – pinnen följer musen innan drag
+  c.addEventListener('mousemove', e => {
+    if (!snapshot) return;
+    const r = c.getBoundingClientRect();
+    const pos = {
+      x: (e.clientX - r.left) * (c.width / r.width),
+      y: (e.clientY - r.top)  * (c.height / r.height)
+    };
+    aim.ex = pos.x;
+    aim.ey = pos.y;
+    render();
+  });
+
+  // klick-placering vid ball-in-hand
+  c.addEventListener('click', e => {
+    if (!snapshot || !snapshot.waitingShot || current!==selfId) return;
+    if (!snapshot.ballInHand) return;
+    const r = c.getBoundingClientRect();
+    const p = {
+      x: (e.clientX - r.left) * (c.width / r.width),
+      y: (e.clientY - r.top)  * (c.height / r.height)
+    };
+    socket.emit('pool:place', { roomId, x: p.x, y: p.y });
+  });
+
+  // dra för skott – tillåt drag utanför canvas
   function toCanvasPoint(clientX, clientY){
     const r=c.getBoundingClientRect();
     return { x: (clientX - r.left)*(c.width/r.width), y: (clientY - r.top)*(c.height/r.height) };
   }
-  let onMove=null, onUp=null;
+  let onMove=null;
   c.addEventListener('mousedown', e=>{
     if(!snapshot || snapshot.waitingShot!==true || current!==selfId) return;
     const p = toCanvasPoint(e.clientX, e.clientY);
@@ -398,7 +434,7 @@ document.addEventListener('DOMContentLoaded', ()=>{
     if(snapshot.ballInHand) aim.placing=true;
 
     onMove = (ev)=>{ const pp = toCanvasPoint(ev.clientX, ev.clientY); aim.ex=pp.x; aim.ey=pp.y; render(); };
-    onUp = (ev)=>{
+    const onUp = (ev)=>{
       if(!snapshot || current!==selfId || snapshot.waitingShot!==true) { cleanup(); return; }
       const pp = toCanvasPoint(ev.clientX, ev.clientY); aim.ex=pp.x; aim.ey=pp.y;
       const cue = snapshot.balls.find(b=>b.id===0); if(!cue){ cleanup(); return; }
