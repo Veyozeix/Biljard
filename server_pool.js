@@ -11,11 +11,11 @@ const io = new Server(server, { pingInterval: 25000, pingTimeout: 20000 });
 app.use(express.static(path.join(__dirname, 'public')));
 
 /** ---------- Lobby, kö, scoreboard ---------- **/
-let queue = [];                   // [{id, name}]
-let matches = new Map();          // roomId -> Match
-let waitingChampion = null;       // { id, name, readyAt, timeout }
+let queue = [];
+let matches = new Map();
+let waitingChampion = null;
 
-const wins = [];                  // [{ name, ts }]
+const wins = [];
 const DAY_MS = 24 * 60 * 60 * 1000;
 function getScoreboard() {
   const now = Date.now();
@@ -31,35 +31,29 @@ function getScoreboard() {
 function broadcastQueue() {
   io.to('lobby').emit('queue:update', { count: queue.length, names: queue.map(p=>p.name) });
 }
-function broadcastScoreboard() {
-  io.to('lobby').emit('score:update', getScoreboard());
-}
+function broadcastScoreboard() { io.to('lobby').emit('score:update', getScoreboard()); }
 function removeFromQueue(id){ const i = queue.findIndex(p=>p.id===id); if(i!==-1) queue.splice(i,1); }
 function nextRoomId(){ return 'room_' + Math.random().toString(36).slice(2,10); }
 
 /** ---------- Chat-begränsningar ---------- **/
 function isInQueue(id){ return queue.some(p=>p.id===id); }
 const CHAT_COOLDOWN_MS = 5000;
-const lastChatAt = new Map(); // socketId -> ts
+const lastChatAt = new Map();
 
-/** ---------- Bord & fysik (server-authoritativ) ---------- **/
-const TICK_MS = 16;                      // ~60fps
-const W = 1080, H = 540;                 // bord storlek (pixlar)
-const MARGIN = 30;                       // kantbredd
-const R = 10;                            // bollradie
-const POCKET_R = 18;                     // fickradie
-const FRICTION = 0.992;                  // friktionsfaktor per tick
-const STOP_EPS = 0.04;                   // tröskel för vila
-const CUE_IMPULSE = 7.5;                 // multiplikator för inslagen kraft
+/** ---------- Bord & fysik ---------- **/
+const TICK_MS = 16;                 // ~60fps
+const W = 1080, H = 540;
+const MARGIN = 30;
+const R = 10;
+const POCKET_R = 18;
+const FRICTION = 0.992;
+const STOP_EPS = 0.04;
+const CUE_IMPULSE = 7.5;
 const MAX_SHOT_POWER = 1.0;
 
 const POCKETS = [
-  {x:MARGIN, y:MARGIN},                  // TL
-  {x:W/2, y:MARGIN},                     // TM
-  {x:W-MARGIN, y:MARGIN},                // TR
-  {x:MARGIN, y:H-MARGIN},                // BL
-  {x:W/2, y:H-MARGIN},                   // BM
-  {x:W-MARGIN, y:H-MARGIN},              // BR
+  {x:MARGIN, y:MARGIN}, {x:W/2, y:MARGIN}, {x:W-MARGIN, y:MARGIN},
+  {x:MARGIN, y:H-MARGIN}, {x:W/2, y:H-MARGIN}, {x:W-MARGIN, y:H-MARGIN},
 ];
 
 const BALLS = {
@@ -69,14 +63,10 @@ const BALLS = {
 };
 
 function rackLayout() {
-  // Standard triangle – apex vid höger sida av bordets mitt
   const startX = W*0.66, startY = H/2;
   const dx = R*2 + 0.5, dy = R*1.73;
-  const order = [1,2,3,4,5,6,7,8, 9,10,11,12,13,14,15];
-  // blanda lite
-  for (let i=order.length-1;i>0;i--){ const j=(Math.random()* (i+1))|0; [order[i],order[j]]=[order[j],order[i]]; }
-  // garantera random placering av 8 i mittenradan
-  // (för MVP låter vi slumpen avgöra position – tillräckligt)
+  const order = [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15];
+  for (let i=order.length-1;i>0;i--){ const j=(Math.random()*(i+1))|0; [order[i],order[j]]=[order[j],order[i]]; }
   const balls = [];
   let idx=0;
   for (let row=0; row<5; row++){
@@ -87,382 +77,8 @@ function rackLayout() {
       balls.push({ id:n, x:nx, y:ny+k*dy, vx:0, vy:0, potted:false });
     }
   }
-  // cue ball till vänster
   balls.push({ id:0, x:W*0.25, y:H*0.5, vx:0, vy:0, potted:false });
   return balls;
 }
 
-function dist2(ax,ay,bx,by){ const dx=ax-bx, dy=ay-by; return dx*dx+dy*dy; }
-function norm(x,y){ const d=Math.hypot(x,y)||1; return [x/d,y/d]; }
-
-/** ---- Matchklass ---- **/
-class Match {
-  constructor(roomId, left, right){
-    this.roomId = roomId;
-    this.players = [left.id, right.id];
-    this.names = { [left.id]:left.name, [right.id]:right.name };
-
-    this.current = this.players[0];        // tur-ägare
-    this.balls = rackLayout();             // alla bollar (inkl. cue id:0)
-    this.groups = {                        // grupp per spelare (null tills satt)
-      [left.id]: null,
-      [right.id]: null
-    };
-    this.legalToEight = { [left.id]: false, [right.id]: false };
-    this.ballInHand = false;               // efter scratch
-    this.waitingShot = true;               // väntar på “shot” från current
-    this.anyPottedThisTurn = [];           // id:n denna tur
-    this.foulThisTurn = false;
-    this.timer = null;
-  }
-
-  start(){
-    if(this.timer) return;
-    this.timer = setInterval(()=>this.tick(), TICK_MS);
-    this.sendState();
-  }
-  stop(){ if(this.timer) clearInterval(this.timer); this.timer=null; }
-
-  ballsMoving(){
-    for(const b of this.balls) if(!b.potted && (Math.abs(b.vx)>STOP_EPS || Math.abs(b.vy)>STOP_EPS)) return true;
-    return false;
-  }
-
-  /** mottar slag: riktning (dx,dy) och power [0..1] */
-  shot(fromId, {dx,dy,power,place}){
-    if(fromId!==this.current) return; // inte din tur
-    // ball-in-hand: placera cue
-    const cue = this.balls.find(b=>b.id===BALLS.cue);
-    if(this.ballInHand && place){
-      cue.x = Math.min(W-MARGIN-R, Math.max(MARGIN+R, place.x));
-      cue.y = Math.min(H-MARGIN-R, Math.max(MARGIN+R, place.y));
-    }
-    // slå
-    const p = Math.max(0, Math.min(MAX_SHOT_POWER, +power||0));
-    const [nx,ny] = norm(dx,dy);
-    cue.vx += nx * CUE_IMPULSE * p;
-    cue.vy += ny * CUE_IMPULSE * p;
-    this.waitingShot = false;
-    this.anyPottedThisTurn.length = 0;
-    this.foulThisTurn = false;
-  }
-
-  tick(){
-    // om vi väntar på slag eller allt stilla -> skicka snapshot och vänt
-    if(this.waitingShot || !this.ballsMoving()){
-      this.sendState();
-      return;
-    }
-
-    // fysiksteg
-    this.integrate();
-    this.handleCollisions();
-    this.handlePockets();
-
-    // avslut på tur när allt stilla
-    if(!this.ballsMoving()){
-      this.resolveTurn();
-      this.waitingShot = true;
-      this.sendState();
-    }
-  }
-
-  integrate(){
-    for(const b of this.balls){
-      if(b.potted) continue;
-      b.x += b.vx; b.y += b.vy;
-      b.vx *= FRICTION; b.vy *= FRICTION;
-      // väggar
-      if(b.x<=MARGIN+R){ b.x=MARGIN+R; b.vx = Math.abs(b.vx); }
-      if(b.x>=W-MARGIN-R){ b.x=W-MARGIN-R; b.vx = -Math.abs(b.vx); }
-      if(b.y<=MARGIN+R){ b.y=MARGIN+R; b.vy = Math.abs(b.vy); }
-      if(b.y>=H-MARGIN-R){ b.y=H-MARGIN-R; b.vy = -Math.abs(b.vy); }
-      if(Math.abs(b.vx)<STOP_EPS) b.vx=0;
-      if(Math.abs(b.vy)<STOP_EPS) b.vy=0;
-    }
-  }
-
-  handleCollisions(){
-    // enkel pairwise
-    for(let i=0;i<this.balls.length;i++){
-      const a = this.balls[i]; if(a.potted) continue;
-      for(let j=i+1;j<this.balls.length;j++){
-        const b = this.balls[j]; if(b.potted) continue;
-        const dx=b.x-a.x, dy=b.y-a.y, rr=(R*2)*(R*2);
-        const d2 = dx*dx+dy*dy;
-        if(d2>0 && d2<rr){
-          const d = Math.sqrt(d2)||1;
-          const nx = dx/d, ny = dy/d;
-          // separera
-          const overlap = (R*2 - d)/2;
-          a.x -= nx*overlap; a.y -= ny*overlap;
-          b.x += nx*overlap; b.y += ny*overlap;
-          // elastisk impuls (lika massor)
-          const av = a.vx*nx + a.vy*ny;
-          const bv = b.vx*nx + b.vy*ny;
-          const p = bv - av;
-          a.vx += nx*p; a.vy += ny*p;
-          b.vx -= nx*p; b.vy -= ny*p;
-        }
-      }
-    }
-  }
-
-  handlePockets(){
-    for(const b of this.balls){
-      if(b.potted) continue;
-      for(const p of POCKETS){
-        if(dist2(b.x,b.y,p.x,p.y) <= (POCKET_R - 4)*(POCKET_R - 4)){
-          b.potted = true; b.vx=0; b.vy=0;
-          this.anyPottedThisTurn.push(b.id);
-          if(b.id===BALLS.cue){ // scratch
-            this.foulThisTurn = true;
-          }
-          break;
-        }
-      }
-    }
-  }
-
-  resolveTurn(){
-    const me = this.current;
-    const opp = this.players.find(id=>id!==me);
-
-    // cue i fickan? -> ball-in-hand för motståndaren
-    if(this.anyPottedThisTurn.includes(BALLS.cue)){
-      // återplacera cue mitt-vänster
-      const cue = this.balls.find(b=>b.id===BALLS.cue);
-      cue.potted=false; cue.x=W*0.25; cue.y=H*0.5; cue.vx=cue.vy=0;
-      this.ballInHand = true;
-      this.foulThisTurn = true;
-    } else {
-      this.ballInHand = false;
-    }
-
-    // sätt grupper om ej satta (första icke-8 potten)
-    if(this.groups[me]==null && this.anyPottedThisTurn.some(id=>id!==BALLS.cue && id!==BALLS.eight)){
-      const first = this.anyPottedThisTurn.find(id=>id!==BALLS.cue && id!==BALLS.eight);
-      const isSolid = BALLS.solids.includes(first);
-      this.groups[me] = isSolid ? 'solid' : 'stripe';
-      this.groups[opp] = isSolid ? 'stripe' : 'solid';
-    }
-
-    // uppdatera legalToEight flaggorna
-    for(const pid of this.players){
-      const grp = this.groups[pid];
-      if(!grp){ this.legalToEight[pid]=false; continue; }
-      const left = this.balls.filter(b=>!b.potted && ((grp==='solid' && BALLS.solids.includes(b.id)) || (grp==='stripe' && BALLS.stripes.includes(b.id)))).length;
-      this.legalToEight[pid] = (left===0);
-    }
-
-    // kolla 8:an
-    if(this.anyPottedThisTurn.includes(BALLS.eight)){
-      const legal = this.legalToEight[me] && !this.foulThisTurn;
-      const winner = legal ? me : opp;
-      const loser  = legal ? opp : me;
-      this.endMatch(winner, loser);
-      return;
-    }
-
-    // turbyte/fortsatt tur
-    const scoredMine =
-      this.anyPottedThisTurn.some(id=>{
-        const grp = this.groups[me];
-        if(!grp) return false;
-        return (grp==='solid' && BALLS.solids.includes(id)) ||
-               (grp==='stripe' && BALLS.stripes.includes(id));
-      });
-
-    if (this.foulThisTurn || !scoredMine){
-      this.current = opp;
-    }
-
-    this.anyPottedThisTurn.length=0;
-    this.foulThisTurn=false;
-  }
-
-  endMatch(winner, loser){
-    const wName = this.names[winner] || 'Spelare';
-    wins.push({ name: wName, ts: Date.now() });
-    broadcastScoreboard();
-
-    io.to('lobby').emit('chat:system', `${wName} VANN MATCHEN!! STORT GRATTIS!`);
-
-    io.to(this.roomId).emit('pool:match:end', {
-      winnerId: winner,
-      loserId: loser,
-      winnerName: wName,
-      loserName: this.names[loser] || 'Spelare'
-    });
-
-    this.stop();
-
-    // kasta båda ur kön
-    removeFromQueue(winner); removeFromQueue(loser);
-
-    const wSock = io.sockets.sockets.get(winner);
-    const lSock = io.sockets.sockets.get(loser);
-    if(wSock){ wSock.leave(this.roomId); wSock.join('lobby'); wSock.emit('queue:left'); }
-    if(lSock){ lSock.leave(this.roomId); lSock.join('lobby'); lSock.emit('queue:left'); }
-
-    matches.delete(this.roomId);
-    broadcastQueue();
-
-    setChampionHold30s(winner, wName);
-  }
-
-  /** --------- I/O --------- **/
-  snapshot(){
-    return {
-      w: W, h: H, r: R, pr: POCKET_R, m: MARGIN,
-      pockets: POCKETS,
-      balls: this.balls.map(b=>({id:b.id,x:b.x,y:b.y,vx:b.vx,vy:b.vy,potted:b.potted})),
-      current: this.current,
-      players: this.players,
-      names: this.names,
-      groups: this.groups,
-      legalToEight: this.legalToEight,
-      ballInHand: this.ballInHand,
-      waitingShot: this.waitingShot
-    };
-  }
-  sendState(){ io.to(this.roomId).emit('pool:state', this.snapshot()); }
-}
-
-/** ---------- Champion-hold och matchmaking ---------- **/
-function clearWinnerHold(){ if(waitingChampion?.timeout) clearTimeout(waitingChampion.timeout); waitingChampion=null; }
-function setChampionHold30s(id,name){
-  clearWinnerHold();
-  waitingChampion = { id, name, readyAt: Date.now()+30000, timeout:null };
-  waitingChampion.timeout = setTimeout(()=>{
-    const s = io.sockets.sockets.get(waitingChampion.id);
-    if(s) s.emit('winner:timeout');
-    waitingChampion.readyAt = Date.now();
-    tryStartMatch();
-  }, 30000);
-}
-
-function canStartMatch(){
-  if(matches.size>0) return false;
-  if(waitingChampion){
-    if(Date.now() < (waitingChampion.readyAt||0)) return false;
-    return queue.length>=1;
-  }
-  return queue.length>=2;
-}
-
-function tryStartMatch(){
-  if(!canStartMatch()){ broadcastQueue(); return; }
-
-  let left, right;
-  if(waitingChampion){ left = waitingChampion; right = queue.shift(); clearWinnerHold(); }
-  else { left = queue.shift(); right = queue.shift(); }
-
-  const sL = io.sockets.sockets.get(left.id);
-  const sR = io.sockets.sockets.get(right.id);
-  if(!sL || !sR){
-    if(sL) queue.unshift(left);
-    if(sR) queue.unshift(right);
-    broadcastQueue();
-    return;
-  }
-
-  const roomId = nextRoomId();
-  sL.leave('lobby'); sR.leave('lobby');
-  sL.join(roomId); sR.join(roomId);
-
-  const m = new Match(roomId, left, right);
-  matches.set(roomId, m); m.start();
-
-  sL.emit('pool:match:start', {
-    roomId, opponent: right.name,
-    players: { selfId:left.id, oppId:right.id }
-  });
-  sR.emit('pool:match:start', {
-    roomId, opponent: left.name,
-    players: { selfId:right.id, oppId:left.id }
-  });
-
-  broadcastQueue();
-}
-
-/** ---------- Socket-IO ---------- **/
-io.on('connection', (socket)=>{
-  socket.join('lobby');
-  socket.emit('queue:update', { count: queue.length, names: queue.map(p=>p.name) });
-  socket.emit('score:update', getScoreboard());
-
-  // chat
-  socket.on('chat:message', ({text})=>{
-    const now=Date.now();
-    if(!isInQueue(socket.id)) return socket.emit('chat:error','Du måste vara i kön för att chatta.');
-    const last = lastChatAt.get(socket.id)||0;
-    const diff = now-last;
-    if(diff<CHAT_COOLDOWN_MS){
-      const secs = Math.ceil((CHAT_COOLDOWN_MS - diff)/1000);
-      return socket.emit('chat:error', `Vänta ${secs}s innan du skickar igen.`);
-    }
-    const entry = queue.find(p=>p.id===socket.id);
-    const name = entry?.name || 'Spelare';
-    const clean = String(text||'').slice(0,500).trim();
-    if(!clean) return;
-    lastChatAt.set(socket.id, now);
-    io.to('lobby').emit('chat:message', { name, text: clean, ts: now });
-  });
-
-  socket.on('queue:join', (name)=>{
-    if(queue.some(p=>p.id===socket.id)) return;
-    const clean = (name||'Spelare').trim().slice(0,18);
-    queue.push({ id:socket.id, name:clean });
-    socket.emit('queue:joined');
-    broadcastQueue();
-    tryStartMatch();
-  });
-
-  socket.on('queue:leave', ()=>{
-    removeFromQueue(socket.id);
-    socket.emit('queue:left');
-    broadcastQueue();
-  });
-
-  socket.on('winner:cancel', ()=>{ clearWinnerHold(); broadcastQueue(); });
-
-  socket.on('disconnect', ()=>{
-    const wasInQueue = isInQueue(socket.id);
-    removeFromQueue(socket.id);
-    if(waitingChampion && waitingChampion.id===socket.id) clearWinnerHold();
-
-    for(const [roomId,m] of matches){
-      if(!m.players.includes(socket.id)) continue;
-      const other = m.players.find(id=>id!==socket.id);
-      const otherSock = io.sockets.sockets.get(other);
-      if(otherSock){
-        otherSock.leave(roomId); otherSock.join('lobby');
-        otherSock.emit('pool:opponent-left');
-        otherSock.emit('queue:left');
-      }
-      m.stop(); matches.delete(roomId);
-    }
-    if(wasInQueue) socket.emit?.('queue:left');
-    broadcastQueue(); tryStartMatch();
-  });
-
-  // spel-input
-  socket.on('pool:shot', ({roomId, dx, dy, power, place})=>{
-    const m = matches.get(roomId); if(!m) return;
-    if(!m.players.includes(socket.id)) return;
-    if(m.current!==socket.id) return;
-    m.shot(socket.id, {dx,dy,power,place});
-  });
-
-  socket.on('pool:place', ({roomId, x,y})=>{
-    const m = matches.get(roomId); if(!m) return;
-    if(m.current!==socket.id) return;
-    if(!m.ballInHand) return;
-    // vi accepterar placering i samband med slag via pool:shot (place)
-  });
-});
-
-/** ---------- Start ---------- **/
-const port = process.env.PORT || 3000;
-server.listen(port, ()=> console.log('Pool server on', port));
+function dist2(ax,ay,bx,by){ const dx=ax-bx, dy=ay-by; retu
