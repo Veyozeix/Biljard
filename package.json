@@ -1,6 +1,17 @@
 {
+  "name": "biljard",
+  "version": "1.0.0",
+  "private": true,
+  "description": "8-ball pool server",
+  "main": "server_pool.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server_pool.js"
   },
-  "engines": { "node": ">=18 <23" }
+  "engines": {
+    "node": ">=18 <23"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "socket.io": "^4.7.5"
+  }
 }
