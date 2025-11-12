@@ -10,7 +10,7 @@ const io = new Server(server, { pingInterval: 25000, pingTimeout: 20000 });
 
 app.use(express.static(path.join(__dirname, 'public')));
 
-// Root -> pool.html (så "Cannot GET /" aldrig händer)
+// Root -> pool.html
 app.get('/', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'pool.html'));
 });
@@ -62,11 +62,11 @@ const lastChatAt = new Map(); // socketId -> timestamp
 const TICK_MS = 16;                      // ~60fps
 const W = 1080, H = 540;                 // bordstorlek
 const MARGIN = 30;                       // rails
-const R = 10;                            // bollradie
-const POCKET_R = 18;                     // fickradie
+const R = 12;                            // BOLL-RADIE (lite större)
+const POCKET_R = 24;                     // fickradie (större för “funnel”)
 const FRICTION = 0.992;                  // friktion per tick
 const STOP_EPS = 0.04;                   // tröskel för vila
-const CUE_IMPULSE = 9.5;                 // kraft-multiplikator (lite punchy)
+const CUE_IMPULSE = 9.5;                 // kraft-multiplikator
 const MAX_SHOT_POWER = 1.0;
 
 const POCKETS = [
@@ -77,6 +77,14 @@ const POCKETS = [
   { x: W / 2, y: H - MARGIN },
   { x: W - MARGIN, y: H - MARGIN },
 ];
+function nearPocket(x, y) {
+  const rr = (POCKET_R + R - 2) * (POCKET_R + R - 2);
+  for (const p of POCKETS) {
+    const dx = x - p.x, dy = y - p.y;
+    if (dx * dx + dy * dy <= rr) return true;
+  }
+  return false;
+}
 
 const BALLS = {
   cue: 0, eight: 8,
@@ -86,7 +94,8 @@ const BALLS = {
 
 function rackLayout() {
   const startX = W * 0.66, startY = H / 2;
-  const dx = R * 2 + 0.5, dy = R * 1.73;
+  const dx = 2 * R + 0.5;
+  const dy = Math.sqrt(3) * R;
   const order = [1,2,3,4,5,6,7,8, 9,10,11,12,13,14,15];
   for (let i = order.length - 1; i > 0; i--) {
     const j = (Math.random() * (i + 1)) | 0; [order[i], order[j]] = [order[j], order[i]];
@@ -123,6 +132,9 @@ class Match {
     this.waitingShot = true;
     this.anyPottedThisTurn = [];
     this.foulThisTurn = false;
+
+    // NYTT: spåra vilka nummer varje spelare sänkt
+    this.pottedBy = { [left.id]: [], [right.id]: [] };
 
     this.timer = null;
     this.lastSent = 0; // nät-throttle
@@ -181,11 +193,13 @@ class Match {
       if (b.potted) continue;
       b.x += b.vx; b.y += b.vy;
       b.vx *= FRICTION; b.vy *= FRICTION;
-      // rails
-      if (b.x <= MARGIN + R) { b.x = MARGIN + R; b.vx = Math.abs(b.vx); }
-      if (b.x >= W - MARGIN - R) { b.x = W - MARGIN - R; b.vx = -Math.abs(b.vx); }
-      if (b.y <= MARGIN + R) { b.y = MARGIN + R; b.vy = Math.abs(b.vy); }
-      if (b.y >= H - MARGIN - R) { b.y = H - MARGIN - R; b.vy = -Math.abs(b.vy); }
+
+      // rails (HOPPA ÖVER studs nära fickor)
+      if (b.x <= MARGIN + R && !nearPocket(b.x, b.y)) { b.x = MARGIN + R; b.vx = Math.abs(b.vx); }
+      if (b.x >= W - MARGIN - R && !nearPocket(b.x, b.y)) { b.x = W - MARGIN - R; b.vx = -Math.abs(b.vx); }
+      if (b.y <= MARGIN + R && !nearPocket(b.x, b.y)) { b.y = MARGIN + R; b.vy = Math.abs(b.vy); }
+      if (b.y >= H - MARGIN - R && !nearPocket(b.x, b.y)) { b.y = H - MARGIN - R; b.vy = -Math.abs(b.vy); }
+
       if (Math.abs(b.vx) < STOP_EPS) b.vx = 0;
       if (Math.abs(b.vy) < STOP_EPS) b.vy = 0;
     }
@@ -244,6 +258,13 @@ class Match {
       this.ballInHand = false;
     }
 
+    // NYTT: kreditera pottade bollar till spelaren vars tur det var
+    for (const id of this.anyPottedThisTurn) {
+      if (id !== BALLS.cue && id !== BALLS.eight) {
+        this.pottedBy[me].push(id);
+      }
+    }
+
     // sätt grupper om ej satta
     if (this.groups[me] == null && this.anyPottedThisTurn.some(id => id !== BALLS.cue && id !== BALLS.eight)) {
       const first = this.anyPottedThisTurn.find(id => id !== BALLS.cue && id !== BALLS.eight);
@@ -299,7 +320,7 @@ class Match {
 
     this.stop();
 
-    // kasta båda ur kön (kräv aktivt "Gå med i kön" igen)
+    // kasta båda ur kön
     removeFromQueue(winner); removeFromQueue(loser);
 
     const wSock = io.sockets.sockets.get(winner);
@@ -324,7 +345,9 @@ class Match {
       groups: this.groups,
       legalToEight: this.legalToEight,
       ballInHand: this.ballInHand,
-      waitingShot: this.waitingShot
+      waitingShot: this.waitingShot,
+      // NYTT: vad varje spelare har sänkt
+      pottedBy: this.pottedBy
     };
   }
 
@@ -400,7 +423,7 @@ io.on('connection', (socket) => {
   socket.emit('queue:update', { count: queue.length, names: queue.map(p => p.name) });
   socket.emit('score:update', getScoreboard());
 
-  // chatt: krav att stå i kö + cooldown
+  // chatt: krav att stå i kön + cooldown
   socket.on('chat:message', ({ text }) => {
     const now = Date.now();
     if (!isInQueue(socket.id)) {
@@ -470,7 +493,7 @@ io.on('connection', (socket) => {
   });
 
   socket.on('pool:place', ({ roomId, x, y }) => {
-    // vi placerar via pool:shot(place) – medvetet tom för kompatibilitet
+    // handled via pool:shot(place)
   });
 });
 
