@@ -180,9 +180,10 @@ document.addEventListener('DOMContentLoaded', ()=>{
   /* --- Canvas & render --- */
   const c = el('tbl'); const ctx = c.getContext('2d');
   let roomId=null, selfId=null, oppId=null, current=null, snapshot=null;
+
   let aim = { down:false, sx:0, sy:0, ex:0, ey:0, power:0, placing:false };
 
-  // polyfill för roundRect om saknas
+  // polyfill för roundRect
   if (!CanvasRenderingContext2D.prototype.roundRect) {
     CanvasRenderingContext2D.prototype.roundRect = function(x,y,w,h,r){
       const rr = Math.min(r, w/2, h/2);
@@ -220,19 +221,20 @@ document.addEventListener('DOMContentLoaded', ()=>{
     }
   }
 
-  function ballColor(id){
-    if(id===0) return '#f7f1de';
-    if(id===8) return '#222';
-    if(id>=1 && id<=7) return '#ffad33';
-    if(id>=9 && id<=15) return '#4aa3ff';
-    return '#e9f1e6';
-  }
+  // riktiga 8-ball färger
+  const COLORS = {
+    0:'#f7f1de', 1:'#ffd400', 2:'#2c6cff', 3:'#e54b3c', 4:'#7b4dff',
+    5:'#ff8a00', 6:'#1e9e58', 7:'#7b2d2d', 8:'#000000',
+    9:'#ffd400', 10:'#2c6cff', 11:'#e54b3c', 12:'#7b4dff',
+    13:'#ff8a00', 14:'#1e9e58', 15:'#7b2d2d'
+  };
+  function ballColor(id){ return COLORS[id] || '#e9f1e6'; }
 
   function drawBallShaded(x, y, r, base, number){
     // skugga
     ctx.beginPath(); ctx.arc(x+1.5,y+1.5,r,0,Math.PI*2);
     ctx.fillStyle='rgba(0,0,0,0.25)'; ctx.fill();
-    // kropp (radial grad)
+    // kropp
     const g = ctx.createRadialGradient(x-r*0.4, y-r*0.4, r*0.2, x, y, r);
     g.addColorStop(0, '#ffffff');
     g.addColorStop(0.15, base);
@@ -246,7 +248,8 @@ document.addEventListener('DOMContentLoaded', ()=>{
     // nummerplatta
     if(number!==0){
       ctx.beginPath(); ctx.arc(x,y,r*0.45,0,Math.PI*2); ctx.fillStyle='#f1f1f1'; ctx.fill();
-      ctx.fillStyle='#000'; ctx.font=`${Math.floor(r*1.1)}px Nunito`; ctx.textAlign='center'; ctx.textBaseline='middle';
+      ctx.fillStyle= number===8 ? '#fff' : '#000';
+      ctx.font=`${Math.floor(r*1.1)}px Nunito`; ctx.textAlign='center'; ctx.textBaseline='middle';
       ctx.fillText(String(number), x, y+0.5);
     }
   }
@@ -258,38 +261,70 @@ document.addEventListener('DOMContentLoaded', ()=>{
     }
   }
 
+  // NYTT: små brickor med sänkta bollar per spelare
+  function drawCollected(s){
+    if(!s.pottedBy) return;
+    const leftId = s.players[0], rightId = s.players[1];
+    const leftList = (s.pottedBy[leftId] || []).slice().sort((a,b)=>a-b);
+    const rightList= (s.pottedBy[rightId]|| []).slice().sort((a,b)=>a-b);
+
+    // bakgrundsband
+    const pad = 6, r = 7, gap = 4;
+    const leftX = s.m - 2, rightX = c.width - s.m + 2;
+    const topY = s.m + 16;
+
+    // vänster
+    let y = topY;
+    for (const num of leftList) {
+      drawBallShaded(leftX, y, r, ballColor(num), num);
+      y += r*2 + gap;
+      if (y > c.height - s.m - 16) break;
+    }
+    // höger
+    y = topY;
+    for (const num of rightList) {
+      drawBallShaded(rightX, y, r, ballColor(num), num);
+      y += r*2 + gap;
+      if (y > c.height - s.m - 16) break;
+    }
+  }
+
+  // Cue bakom bollen (rätt riktning)
   function drawCueStick(s){
     if(!snapshot || snapshot.waitingShot!==true) return;
     if(current!==selfId) return;
     const cue = s.balls.find(b=>b.id===0);
     if(!cue || cue.potted) return;
 
+    // riktning från mus mot boll
     const dx = cue.x - (aim.ex||cue.x);
     const dy = cue.y - (aim.ey||cue.y);
     const ang = Math.atan2(dy, dx);
 
-    const offset = 18 + (aim.power||0)*40; // bakdrag vs kraft
-    const px = cue.x + Math.cos(ang) * offset;
-    const py = cue.y + Math.sin(ang) * offset;
+    // placera STICKAN BAKOM bollen (negativt offset)
+    const offset = 18 + (aim.power||0)*40;
+    const px = cue.x - Math.cos(ang) * offset;
+    const py = cue.y - Math.sin(ang) * offset;
 
     const L = 260, W = 7;
     ctx.save();
     ctx.translate(px, py);
     ctx.rotate(ang);
 
-    const grad = ctx.createLinearGradient(0, -W/2, -L, -W/2);
-    grad.addColorStop(0, '#f7d6a1');
-    grad.addColorStop(0.05, '#eac089');
-    grad.addColorStop(0.8, '#b07d45');
-    grad.addColorStop(1, '#111');
+    const grad = ctx.createLinearGradient(-L, 0, 0, 0);
+    grad.addColorStop(0, '#111');
+    grad.addColorStop(0.2, '#b07d45');
+    grad.addColorStop(0.95, '#eac089');
+    grad.addColorStop(1, '#f7d6a1');
 
     ctx.fillStyle = grad;
     ctx.beginPath();
     ctx.roundRect(-L, -W/2, L, W, 3);
     ctx.fill();
 
+    // tip längst fram (nära 0)
     ctx.fillStyle = '#f2f2f2';
-    ctx.fillRect(-8, -W/2, 8, W);
+    ctx.fillRect(-2, -W/2, 8, W);
 
     ctx.restore();
   }
@@ -320,6 +355,7 @@ document.addEventListener('DOMContentLoaded', ()=>{
     if(!snapshot) return;
     drawTable(snapshot);
     drawBalls(snapshot);
+    drawCollected(snapshot);
     drawCueStick(snapshot);
     drawAim(snapshot);
   }
@@ -390,13 +426,12 @@ document.addEventListener('DOMContentLoaded', ()=>{
 
   socket.on('pool:opponent-left', ()=>{ backToLobby(); });
 
-  // snapshots vid anslutning hanteras server-side (queue:update, score:update)
+  // snapshots vid anslutning hanteras server-side
   socket.on('queue:update', ({count,names})=>{ countEl.textContent=count; namesEl.innerHTML = names.map(n=>`<span class="pill">${n}</span>`).join(''); });
 
   // Exit
   el('exit').addEventListener('click', ()=> window.location.reload());
 
-  // Layout helpers
   function setLobbyLayout(){ document.body.classList.remove('game'); layout.classList.add('lobby'); layout.classList.remove('onecol'); chatPanel.style.display='flex'; el('scoreWrap').style.display='block'; }
   function setGameLayout(){ document.body.classList.add('game'); layout.classList.remove('lobby'); layout.classList.add('onecol'); chatPanel.style.display='none'; el('scoreWrap').style.display='none'; }
 });
