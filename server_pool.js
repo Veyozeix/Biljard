@@ -132,7 +132,7 @@ class Match {
 
     // Spårning
     this.pottedBy = { [left.id]: [], [right.id]: [] };
-    this.firstContactMade = false; // NYTT: för foul ”ingen träff”
+    this.firstContactMade = false; // ”ingen träff”-foul
 
     this.timer = null;
     this.lastSent = 0; // nät-throttle
@@ -191,7 +191,7 @@ class Match {
       b.x += b.vx; b.y += b.vy;
       b.vx *= FRICTION; b.vy *= FRICTION;
 
-      // rails (hoppa studs nära fickor – låt bollen ”funnela” in)
+      // rails (undvik studs rakt i fickor – funnellogik)
       if (b.x <= MARGIN + R && !nearPocket(b.x, b.y)) { b.x = MARGIN + R; b.vx = Math.abs(b.vx); }
       if (b.x >= W - MARGIN - R && !nearPocket(b.x, b.y)) { b.x = W - MARGIN - R; b.vx = -Math.abs(b.vx); }
       if (b.y <= MARGIN + R && !nearPocket(b.x, b.y)) { b.y = MARGIN + R; b.vy = Math.abs(b.vy); }
@@ -223,7 +223,7 @@ class Match {
           a.vx += nx * p; a.vy += ny * p;
           b.vx -= nx * p; b.vy -= ny * p;
 
-          // NYTT: första kontakt mellan cue och annan boll?
+          // första kontakt mellan cue och annan boll?
           if (!this.firstContactMade) {
             if ((a.id === BALLS.cue && b.id !== BALLS.cue) ||
                 (b.id === BALLS.cue && a.id !== BALLS.cue)) {
@@ -253,14 +253,11 @@ class Match {
   respotBall(id) {
     const ball = this.balls.find(b => b.id === id);
     if (!ball) return false;
-    // enkel sök över ett grid i mitten
     for (let tries = 0; tries < 300; tries++) {
       const x = W*0.5 + (Math.random()-0.5) * 300;
       const y = H*0.5 + (Math.random()-0.5) * 200;
-      // håll inom rails
       const xx = Math.min(W - MARGIN - R, Math.max(MARGIN + R, x));
       const yy = Math.min(H - MARGIN - R, Math.max(MARGIN + R, y));
-      // undvik överlapp
       let ok = true;
       for (const b of this.balls) {
         if (b === ball || b.potted) continue;
@@ -268,7 +265,6 @@ class Match {
         if (dx*dx + dy*dy < (2*R)*(2*R)) { ok = false; break; }
       }
       if (!ok) continue;
-      // undvik fickor
       if (nearPocket(xx, yy)) continue;
 
       ball.x = xx; ball.y = yy; ball.vx = ball.vy = 0; ball.potted = false;
@@ -324,7 +320,7 @@ class Match {
       this.endMatch(winner, loser); return;
     }
 
-    // om grupper satta: sänkte skytten motståndarens boll?
+    // fel grupp? -> respot en egen ”rätt” boll
     let sankFelGrupp = false;
     if (this.groups[me]) {
       const mineIsSolid = this.groups[me] === 'solid';
@@ -334,15 +330,12 @@ class Match {
         if (isSolid !== mineIsSolid) { sankFelGrupp = true; break; }
       }
       if (sankFelGrupp) {
-        // respota en av skyttens tidigare rätt-grupp-bollar (om finns)
         const myList = this.pottedBy[me];
         const ownGroupIds = myList.filter(id => (BALLS.solids.includes(id)) === mineIsSolid);
         if (ownGroupIds.length > 0) {
           const takeBack = ownGroupIds[(Math.random()*ownGroupIds.length)|0];
-          // ta bort från listan
           const idx = myList.indexOf(takeBack);
           if (idx !== -1) myList.splice(idx, 1);
-          // respot på bordet
           this.respotBall(takeBack);
         }
       }
@@ -546,7 +539,42 @@ io.on('connection', (socket) => {
     m.shot(socket.id, { dx, dy, power, place });
   });
 
-  socket.on('pool:place', () => { /* kompatibilitet – placering sker via pool:shot(place) */ });
+  // **NYTT**: faktisk fri placering vid ball-in-hand
+  socket.on('pool:place', ({ roomId, x, y }) => {
+    const m = matches.get(roomId);
+    if (!m) return;
+    if (!m.players.includes(socket.id)) return;
+    if (m.current !== socket.id) return;
+    if (!m.ballInHand || !m.waitingShot) return;
+
+    const R = m.snapshot().r;
+    const M = m.snapshot().m;
+    const W = m.snapshot().w;
+    const H = m.snapshot().h;
+
+    let nx = Math.min(W - M - R, Math.max(M + R, x));
+    let ny = Math.min(H - M - R, Math.max(M + R, y));
+
+    const pr = m.snapshot().pr;
+    const nearP = m.snapshot().pockets.some(p => {
+      const dx = nx - p.x, dy = ny - p.y;
+      return (dx*dx + dy*dy) <= (pr - 4) * (pr - 4);
+    });
+    if (nearP) return;
+
+    for (const b of m.balls) {
+      if (b.id === 0 || b.potted) continue;
+      const dx = nx - b.x, dy = ny - b.y;
+      if (dx*dx + dy*dy < (2*R)*(2*R)) return;
+    }
+
+    const cue = m.balls.find(b => b.id === 0);
+    cue.potted = false;
+    cue.vx = cue.vy = 0;
+    cue.x = nx;
+    cue.y = ny;
+    m.sendState();
+  });
 });
 
 /* ---------------- Start ---------------- */
