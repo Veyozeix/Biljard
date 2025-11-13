@@ -166,7 +166,7 @@ document.addEventListener('DOMContentLoaded', ()=>{
 
   const socket = io();
 
-  /* --- Chat: i kön + cooldown --- */
+  /* --- Chat, scoreboard, kö (oförändrat) --- */
   let inQueue=false, cd=null, canSend=false;
   function setChatEnabled(x){ chatText.disabled=!x; chatSend.disabled=!x; }
   function startCooldown(s=5){
@@ -183,7 +183,6 @@ document.addEventListener('DOMContentLoaded', ()=>{
   socket.on('chat:system', appendSys);
   socket.on('chat:error', msg=>{ appendSys(msg); });
 
-  /* --- Scoreboard render --- */
   function renderScoreboard(list){
     if(!Array.isArray(list)||list.length===0){
       scoreList.innerHTML = `<div class="empty">Ingen har vunnit en match de senaste 24 timmarna.</div>`;
@@ -193,7 +192,6 @@ document.addEventListener('DOMContentLoaded', ()=>{
   }
   socket.on('score:update', renderScoreboard);
 
-  /* --- Kö UI --- */
   function resetLobbyBtns(){ nameInput.disabled=false; updateJoin(); leaveBtn.style.display='none'; }
   joinBtn.addEventListener('click', ()=>{ const n=nameInput.value.trim(); if(!n)return; socket.emit('queue:join', n); leaveBtn.style.display='inline-block'; joinBtn.disabled=true; nameInput.disabled=true; });
   leaveBtn.addEventListener('click', ()=> socket.emit('queue:leave'));
@@ -388,7 +386,7 @@ document.addEventListener('DOMContentLoaded', ()=>{
     drawCueStick(snapshot);
     drawAim(snapshot);
 
-    // BONUS #5: tydlig cursor när ball-in-hand
+    // tydlig cursor när ball-in-hand
     if (snapshot.waitingShot && current===selfId && snapshot.ballInHand) {
       c.style.cursor = 'crosshair';
     } else {
@@ -493,10 +491,8 @@ document.addEventListener('DOMContentLoaded', ()=>{
 
   socket.on('pool:opponent-left', ()=>{ backToLobby(); });
 
-  // snapshots vid anslutning hanteras server-side
   socket.on('queue:update', ({count,names})=>{ countEl.textContent=count; namesEl.innerHTML = names.map(n=>`<span class="pill">${n}</span>`).join(''); });
 
-  // Exit
   el('exit').addEventListener('click', ()=> window.location.reload());
 
   function setLobbyLayout(){ document.body.classList.remove('game'); layout.classList.add('lobby'); layout.classList.remove('onecol'); chatPanel.style.display='flex'; el('scoreWrap').style.display='block'; }
