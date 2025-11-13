@@ -57,11 +57,12 @@ button[disabled]{opacity:.45; cursor:not-allowed}
 .canvas-wrap{display:grid; place-items:center; position:relative}
 canvas{ background:#083223; border:2px solid #153b2a; border-radius:12px; width:900px; height:480px; max-width:92vw }
 
-/* Trays – en rad per boll */
+/* Trays (vänster/höger om bordet) – EN RAD/POST */
 .tray{
   position:absolute; top:8px; bottom:8px; width:200px;
   display:flex; flex-direction:column; gap:10px;
-  padding:12px; background:#0b1f17; border:1px solid #143425; border-radius:12px; overflow:auto;
+  padding:12px; background:#0b1f17; border:1px solid #143425; border-radius:12px;
+  overflow:auto;
 }
 .tray h4{ margin:0; font-weight:800; color:var(--accent); text-align:center }
 .tray .list{ display:flex; flex-direction:column; gap:8px; }
@@ -71,22 +72,11 @@ canvas{ background:#083223; border:2px solid #153b2a; border-radius:12px; width:
 }
 .tray .row canvas{ width:28px; height:28px; display:block; }
 .tray .row .lbl{ font-weight:700; color:#e9f1e6; }
-.tray-left{ right:100%; margin-right:10px } .tray-right{ left:100%; margin-left:10px }
 
-/* Placering-hint i mitten – låt klick gå igenom */
-.center-hint{
-  position:absolute; inset:0; display:none; place-items:center;
-  background:rgba(6,26,18,.55); border-radius:12px;
-  pointer-events: none;
-}
-.center-hint .inner{
-  text-align:center; padding:18px 22px; background:#0e2219; border:1px solid #143425; border-radius:12px;
-  box-shadow:0 10px 30px rgba(0,0,0,.35);
-}
-.center-hint .title{ font-size:28px; font-weight:800; letter-spacing:1px; color:var(--accent); }
-.center-hint .sub{ margin-top:6px; color:var(--muted); }
+.tray-left{ right:100%; margin-right:10px }
+.tray-right{ left:100%;  margin-left:10px }
 
-/* Match slut overlay */
+/* Overlay */
 .overlay{ position:absolute; inset:0; display:none; align-items:center; justify-content:center; background:rgba(6,26,18,.75); border-radius:12px; }
 .overlay .inner{ text-align:center; padding:24px; max-width:90%; }
 .big-title{ font-size:56px; letter-spacing:6px; color:var(--accent); font-weight:800; margin-bottom:12px; }
@@ -133,20 +123,10 @@ canvas{ background:#083223; border:2px solid #153b2a; border-radius:12px; width:
           <h4 id="trayLeftName">Spelare A</h4>
           <div id="trayLeftList" class="list"></div>
         </div>
-
         <canvas id="tbl" width="1080" height="540"></canvas>
-
         <div class="tray tray-right">
           <h4 id="trayRightName">Spelare B</h4>
           <div id="trayRightList" class="list"></div>
-        </div>
-
-        <!-- Center hint för placering -->
-        <div id="placeHint" class="center-hint">
-          <div class="inner">
-            <div class="title" id="placeTitle">PLACERA VITA BOLLEN</div>
-            <div class="sub">Klicka på bordet för att placera. Kö-sticken visas efter placering.</div>
-          </div>
         </div>
       </div>
 
@@ -180,7 +160,6 @@ document.addEventListener('DOMContentLoaded', ()=>{
   const scoreList=el('scoreList');
   const trayLeftName=el('trayLeftName'), trayRightName=el('trayRightName');
   const trayLeftList=el('trayLeftList'), trayRightList=el('trayRightList');
-  const placeHint=el('placeHint'), placeTitle=el('placeTitle');
 
   function updateJoin(){ joinBtn.disabled = nameInput.value.trim().length<1; }
   nameInput.addEventListener('input', updateJoin); updateJoin();
@@ -230,7 +209,14 @@ document.addEventListener('DOMContentLoaded', ()=>{
   const c = el('tbl'); const ctx = c.getContext('2d');
   let roomId=null, selfId=null, oppId=null, current=null, snapshot=null;
 
-  let aim = { down:false, sx:0, sy:0, ex:0, ey:0, power:0, placing:false };
+  // aim: riktning + power + drag
+  let aim = {
+    dirX: 1, dirY: 0,
+    power: 0,
+    dragging: false,
+    dragStartX: 0,
+    dragStartY: 0
+  };
 
   // roundRect polyfill
   if (!CanvasRenderingContext2D.prototype.roundRect) {
@@ -312,8 +298,9 @@ document.addEventListener('DOMContentLoaded', ()=>{
 
   // TRAYS – en rad per boll med liten ikon
   function renderTrays(s){
-    trayLeftName.textContent = s.names[s.players[0]] || 'Spelare';
-    trayRightName.textContent = s.names[s.players[1]] || 'Spelare';
+    if (!s.players) return;
+    trayLeftName.textContent = s.names?.[s.players[0]] || 'Spelare';
+    trayRightName.textContent = s.names?.[s.players[1]] || 'Spelare';
 
     function rowFor(num){
       const wrap = document.createElement('div');
@@ -340,12 +327,25 @@ document.addEventListener('DOMContentLoaded', ()=>{
       listEl.innerHTML = '';
       (arr || []).slice().sort((a,b)=>a-b).forEach(n => listEl.appendChild(rowFor(n)));
     }
-    fill(trayLeftList,  s.pottedBy[s.players[0]]);
-    fill(trayRightList, s.pottedBy[s.players[1]]);
+
+    // om servern inte skickar pottedBy (nuvarande server gör inte det), håll dessa tomma
+    fill(trayLeftList,  s.pottedBy?.[s.players[0]] || []);
+    fill(trayRightList, s.pottedBy?.[s.players[1]] || []);
   }
 
-  // --- AIMING HELP: hitta första boll längs riktningen ---
+  // --- Hjälpfunktioner för sikte ---
+  function toCanvasPoint(clientX, clientY){
+    const r=c.getBoundingClientRect();
+    return { x: (clientX - r.left)*(c.width/r.width), y: (clientY - r.top)*(c.height/r.height) };
+  }
+
+  function findCueBall(s){
+    return s?.balls?.find(b => b.id===0 && !b.potted) || null;
+  }
+
+  // hitta första objektbollen längs riktning
   function findAimTarget(state, cue, dirX, dirY){
+    if (!state || !cue) return null;
     const R = state.r;
     let bestT = Infinity;
     let target = null;
@@ -370,18 +370,15 @@ document.addEventListener('DOMContentLoaded', ()=>{
     return { ball: target, t: bestT, ix, iy };
   }
 
-  // RITA INTE kö-sticken om ball-in-hand gäller
+  // RITA INTE kö-sticken om ball-in-hand
   function drawCueStick(s){
     if(!snapshot || snapshot.waitingShot!==true) return;
     if(current!==selfId) return;
     if (s.ballInHand) return;
-    const cue = s.balls.find(b=>b.id===0);
-    if(!cue || cue.potted) return;
+    const cue = findCueBall(s);
+    if(!cue) return;
 
-    const dx = (aim.ex||cue.x) - cue.x;
-    const dy = (aim.ey||cue.y) - cue.y;
-    const ang = Math.atan2(dy, dx);
-
+    const ang = Math.atan2(aim.dirY, aim.dirX);
     const offset = 18 + (aim.power||0)*40;
     const px = cue.x - Math.cos(ang) * offset;
     const py = cue.y - Math.sin(ang) * offset;
@@ -410,44 +407,39 @@ document.addEventListener('DOMContentLoaded', ()=>{
     if(!snapshot || snapshot.waitingShot!==true) return;
     if(current!==selfId) return;
     if (s.ballInHand) return;
-    const cue = s.balls.find(b=>b.id===0);
-    if(!cue || cue.potted) return;
+    const cue = findCueBall(s);
+    if(!cue) return;
 
-    const targetX = aim.ex||cue.x;
-    const targetY = aim.ey||cue.y;
-    const dx = targetX - cue.x;
-    const dy = targetY - cue.y;
-    const len = Math.hypot(dx,dy) || 1;
-    const dirX = dx/len;
-    const dirY = dy/len;
+    const dirX = aim.dirX;
+    const dirY = aim.dirY;
 
     ctx.save();
 
-    /* 1) Grund-sikte från vit → sikte */
+    // 1) grund-sikte från vit → framåt
+    const baseLen = 220;
+    const tx = cue.x + dirX*baseLen;
+    const ty = cue.y + dirY*baseLen;
     ctx.setLineDash([6,5]);
     ctx.strokeStyle = 'rgba(255,255,255,0.6)';
     ctx.lineWidth = 2;
     ctx.beginPath();
     ctx.moveTo(cue.x, cue.y);
-    ctx.lineTo(targetX, targetY);
+    ctx.lineTo(tx, ty);
     ctx.stroke();
 
-    /* 2) Nybörjarhjälp: objektbollens verkliga bana.
-       – Vi hittar första bollen längs strålen.
-       – Objektbollens riktning = linjen mellan bollarnas centrum
-         (alltså från vita → objektboll). */
+    // 2) objektbollens riktiga bana
     const hit = findAimTarget(s, cue, dirX, dirY);
     if (hit){
-      // linje till träffpunkten
+      // linje från vit → träffpunkt
       ctx.setLineDash([4,4]);
-      ctx.strokeStyle = 'rgba(255,255,255,0.4)';
+      ctx.strokeStyle = 'rgba(255,255,255,0.35)';
       ctx.lineWidth = 1.5;
       ctx.beginPath();
       ctx.moveTo(cue.x, cue.y);
       ctx.lineTo(hit.ix, hit.iy);
       ctx.stroke();
 
-      // riktning för objektbollen = line-of-centers
+      // objektbollens direction = line-of-centers (från vit → obj)
       const odx = hit.ball.x - cue.x;
       const ody = hit.ball.y - cue.y;
       const olen = Math.hypot(odx, ody) || 1;
@@ -459,7 +451,7 @@ document.addEventListener('DOMContentLoaded', ()=>{
       const oy2 = hit.ball.y + oDirY*objLen;
 
       ctx.setLineDash([3,6]);
-      ctx.strokeStyle = 'rgba(231,255,110,0.8)';
+      ctx.strokeStyle = 'rgba(231,255,110,0.9)';
       ctx.lineWidth = 2;
       ctx.beginPath();
       ctx.moveTo(hit.ball.x, hit.ball.y);
@@ -470,7 +462,7 @@ document.addEventListener('DOMContentLoaded', ()=>{
       ctx.setLineDash([]);
       ctx.beginPath();
       ctx.arc(hit.ball.x, hit.ball.y, s.r+3, 0, Math.PI*2);
-      ctx.strokeStyle='rgba(231,255,110,0.9)';
+      ctx.strokeStyle='rgba(231,255,110,0.95)';
       ctx.lineWidth=2;
       ctx.stroke();
     }
@@ -478,11 +470,9 @@ document.addEventListener('DOMContentLoaded', ()=>{
     ctx.setLineDash([]);
 
     // 3) power-bar
-    const p = Math.min(1, Math.hypot(targetX-cue.x, targetY-cue.y)/160);
-    aim.power = p;
     const w = 160, h = 10, x = c.width - w - 20, y = 20;
     ctx.strokeStyle = '#e7ff6e'; ctx.lineWidth=2; ctx.strokeRect(x,y,w,h);
-    ctx.fillStyle = '#e7ff6e'; ctx.fillRect(x,y,w*p,h);
+    ctx.fillStyle = '#e7ff6e'; ctx.fillRect(x,y,w*aim.power,h);
 
     ctx.restore();
   }
@@ -495,24 +485,36 @@ document.addEventListener('DOMContentLoaded', ()=>{
     drawCueStick(snapshot);
     drawAim(snapshot);
 
-    const showPlace = snapshot.waitingShot && current===selfId && snapshot.ballInHand;
-    placeHint.style.display = showPlace ? 'grid' : 'none';
-    c.style.cursor = showPlace ? 'crosshair' : 'default';
+    // cursor-hint vid ball-in-hand
+    if (snapshot.waitingShot && current===selfId && snapshot.ballInHand) {
+      c.style.cursor = 'crosshair';
+    } else {
+      c.style.cursor = 'default';
+    }
   }
 
-  // GLOBAL musrörelse -> fri riktning även utanför canvas
-  function toCanvasPoint(clientX, clientY){
-    const r=c.getBoundingClientRect();
-    return { x: (clientX - r.left)*(c.width/r.width), y: (clientY - r.top)*(c.height/r.height) };
-  }
+  /* --- Aiming-interaktion --- */
+
+  // 1) fri riktning: musrörelse (även utanför canvas)
   window.addEventListener('mousemove', (e)=>{
-    if(!snapshot) return;
+    if (!snapshot || !snapshot.waitingShot || current!==selfId) return;
+    if (snapshot.ballInHand) return; // vid placering styr man bara bollen
+    if (aim.dragging) return;        // under drag ändras inte riktning
+
+    const cue = findCueBall(snapshot);
+    if (!cue) return;
     const p = toCanvasPoint(e.clientX, e.clientY);
-    aim.ex = p.x; aim.ey = p.y;
+    const dx = p.x - cue.x;
+    const dy = p.y - cue.y;
+    const len = Math.hypot(dx,dy);
+    if (len < 1) return;
+    aim.dirX = dx/len;
+    aim.dirY = dy/len;
+
     if (game.style.display !== 'none') render();
   });
 
-  // klick-placering vid ball-in-hand
+  // 2) klick för ball-in-hand – placera vit
   c.addEventListener('click', e => {
     if (!snapshot || !snapshot.waitingShot || current!==selfId) return;
     if (!snapshot.ballInHand) return;
@@ -520,34 +522,59 @@ document.addEventListener('DOMContentLoaded', ()=>{
     socket.emit('pool:place', { roomId, x: p.x, y: p.y });
   });
 
-  // dra för skott – tillåt drag utanför canvas
-  let onMove=null;
+  // 3) drag bakåt för att ladda kraft – tillåt drag utanför canvas
+  let dragMoveHandler = null;
   c.addEventListener('mousedown', e=>{
     if(!snapshot || snapshot.waitingShot!==true || current!==selfId) return;
-    if (snapshot.ballInHand) return;
+    if (snapshot.ballInHand) return; // kan inte skjuta när man ska placera
 
-    const p = toCanvasPoint(e.clientX, e.clientY);
-    aim.down=true; aim.sx=aim.ex=p.x; aim.sy=aim.ey=p.y;
+    const cue = findCueBall(snapshot);
+    if (!cue) return;
 
-    onMove = (ev)=>{ const pp = toCanvasPoint(ev.clientX, ev.clientY); aim.ex=pp.x; aim.ey=pp.y; render(); };
-    const onUp = (ev)=>{
-      if(!snapshot || current!==selfId || snapshot.waitingShot!==true) { cleanup(); return; }
-      const pp = toCanvasPoint(ev.clientX, ev.clientY); aim.ex=pp.x; aim.ey=pp.y;
-      const cue = snapshot.balls.find(b=>b.id===0); if(!cue){ cleanup(); return; }
+    aim.dragging = true;
+    aim.power = 0;
+    const start = toCanvasPoint(e.clientX, e.clientY);
+    aim.dragStartX = start.x;
+    aim.dragStartY = start.y;
 
-      const dx = aim.ex - cue.x;
-      const dy = aim.ey - cue.y;
-      const power = Math.min(1, Math.hypot(dx,dy)/160);
-      socket.emit('pool:shot', { roomId, dx, dy, power, place: null });
-      cleanup();
+    dragMoveHandler = (ev)=>{
+      if (!aim.dragging) return;
+      const p = toCanvasPoint(ev.clientX, ev.clientY);
+      const dx = p.x - aim.dragStartX;
+      const dy = p.y - aim.dragStartY;
+      // projicera på motsatt riktning (bakåt = positivt)
+      const along = - (dx*aim.dirX + dy*aim.dirY);
+      const pullMax = 140;
+      const raw = along / pullMax;
+      aim.power = Math.max(0, Math.min(1, raw));
+      render();
     };
-    window.addEventListener('mousemove', onMove);
-    window.addEventListener('mouseup', onUp, { once:true });
+
+    const upHandler = (ev)=>{
+      window.removeEventListener('mousemove', dragMoveHandler);
+      aim.dragging = false;
+      const cueNow = findCueBall(snapshot);
+      if (!snapshot || !cueNow || current!==selfId || snapshot.waitingShot!==true) {
+        aim.power = 0; render(); return;
+      }
+      const pwr = aim.power;
+      aim.power = 0;
+      if (pwr <= 0.01){ render(); return; }
+
+      // skicka stöt – dx,dy = riktning
+      socket.emit('pool:shot', {
+        roomId,
+        dx: aim.dirX,
+        dy: aim.dirY,
+        power: pwr,
+        place: null
+      });
+      render();
+    };
+
+    window.addEventListener('mousemove', dragMoveHandler);
+    window.addEventListener('mouseup', upHandler, { once:true });
   });
-  function cleanup(){
-    aim.down=false; aim.power=0;
-    if(onMove) { window.removeEventListener('mousemove', onMove); onMove=null; }
-  }
 
   /* --- Matchflöde --- */
   socket.on('pool:match:start', ({roomId:r, opponent, players})=>{
