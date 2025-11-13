@@ -73,10 +73,11 @@ canvas{ background:#083223; border:2px solid #153b2a; border-radius:12px; width:
 .tray .row .lbl{ font-weight:700; color:#e9f1e6; }
 .tray-left{ right:100%; margin-right:10px } .tray-right{ left:100%; margin-left:10px }
 
-/* Placering-hint i mitten */
+/* Placering-hint i mitten – fånga INTE klick */
 .center-hint{
   position:absolute; inset:0; display:none; place-items:center;
   background:rgba(6,26,18,.55); border-radius:12px;
+  pointer-events: none; /* <-- låt klick gå igenom till canvas */
 }
 .center-hint .inner{
   text-align:center; padding:18px 22px; background:#0e2219; border:1px solid #143425; border-radius:12px;
@@ -321,7 +322,7 @@ document.addEventListener('DOMContentLoaded', ()=>{
   function drawCueStick(s){
     if(!snapshot || snapshot.waitingShot!==true) return;
     if(current!==selfId) return;
-    if (s.ballInHand) return; // <--- döljer kö-sticken tills placering gjorts
+    if (s.ballInHand) return;
 
     const cue = s.balls.find(b=>b.id===0); if(!cue || cue.potted) return;
     const dx = cue.x - (aim.ex||cue.x), dy = cue.y - (aim.ey||cue.y);
@@ -341,7 +342,7 @@ document.addEventListener('DOMContentLoaded', ()=>{
   function drawAim(s){
     if(!snapshot || snapshot.waitingShot!==true) return;
     if(current!==selfId) return;
-    if (s.ballInHand) return; // <--- döljer linjen tills placering gjorts
+    if (s.ballInHand) return;
     const cue = s.balls.find(b=>b.id===0); if(!cue || cue.potted) return;
     ctx.setLineDash([6,5]); ctx.strokeStyle = 'rgba(255,255,255,0.6)'; ctx.lineWidth = 2;
     ctx.beginPath(); ctx.moveTo(cue.x, cue.y); ctx.lineTo(aim.ex||cue.x, aim.ey||cue.y); ctx.stroke(); ctx.setLineDash([]);
@@ -360,18 +361,9 @@ document.addEventListener('DOMContentLoaded', ()=>{
     drawCueStick(snapshot);
     drawAim(snapshot);
 
-    // Visa stor hint mitt i bilden endast för den spelare som ska placera
     const showPlace = snapshot.waitingShot && current===selfId && snapshot.ballInHand;
     placeHint.style.display = showPlace ? 'grid' : 'none';
-
-    // Cursor och liten text-hint
-    if (showPlace) {
-      c.style.cursor = 'crosshair';
-      placeTitle.textContent = 'PLACERA VITA BOLLEN';
-      statusEl.textContent = '';
-    } else {
-      c.style.cursor = 'default';
-    }
+    c.style.cursor = showPlace ? 'crosshair' : 'default';
   }
 
   // GLOBAL musrörelse -> fri riktning även utanför canvas
@@ -387,6 +379,7 @@ document.addEventListener('DOMContentLoaded', ()=>{
   });
 
   // ENDAST klick för placering när ball-in-hand (pinnen ej synlig då)
+  const c = document.getElementById('tbl');
   c.addEventListener('click', e => {
     if (!snapshot || !snapshot.waitingShot || current!==selfId) return;
     if (!snapshot.ballInHand) return;
@@ -398,7 +391,7 @@ document.addEventListener('DOMContentLoaded', ()=>{
   let onMove=null;
   c.addEventListener('mousedown', e=>{
     if(!snapshot || snapshot.waitingShot!==true || current!==selfId) return;
-    if (snapshot.ballInHand) return; // <--- förhindra drag innan placering är gjord
+    if (snapshot.ballInHand) return;
 
     const p = toCanvasPoint(e.clientX, e.clientY);
     aim.down=true; aim.sx=aim.ex=p.x; aim.sy=aim.ey=p.y;
@@ -444,7 +437,7 @@ document.addEventListener('DOMContentLoaded', ()=>{
 
   let countdown=null;
   socket.on('pool:match:end', ({winnerId, loserId, winnerName})=>{
-    const overlay = el('overlay'), ovTitle=el('ovTitle'), ovActions=el('ovActions'), ovTimer=el('ovTimer');
+    const overlay = document.getElementById('overlay'), ovTitle=document.getElementById('ovTitle'), ovActions=document.getElementById('ovActions'), ovTimer=document.getElementById('ovTimer');
     ovTitle.textContent = `${winnerName||'Spelare'} VANN!!!`;
     overlay.style.display='flex'; ovActions.innerHTML=''; ovTimer.textContent='';
     const iWon = winnerId===selfId;
@@ -464,10 +457,10 @@ document.addEventListener('DOMContentLoaded', ()=>{
   socket.on('pool:opponent-left', ()=>{ backToLobby(); });
   socket.on('queue:update', ({count,names})=>{ countEl.textContent=count; namesEl.innerHTML = names.map(n=>`<span class="pill">${n}</span>`).join(''); });
 
-  el('exit').addEventListener('click', ()=> window.location.reload());
+  document.getElementById('exit').addEventListener('click', ()=> window.location.reload());
 
-  function setLobbyLayout(){ document.body.classList.remove('game'); layout.classList.add('lobby'); layout.classList.remove('onecol'); chatPanel.style.display='flex'; el('scoreWrap').style.display='block'; }
-  function setGameLayout(){ document.body.classList.add('game'); layout.classList.remove('lobby'); layout.classList.add('onecol'); chatPanel.style.display='none'; el('scoreWrap').style.display='none'; }
+  function setLobbyLayout(){ document.body.classList.remove('game'); layout.classList.add('lobby'); layout.classList.remove('onecol'); chatPanel.style.display='flex'; document.getElementById('scoreWrap').style.display='block'; }
+  function setGameLayout(){ document.body.classList.add('game'); layout.classList.remove('lobby'); layout.classList.add('onecol'); chatPanel.style.display='none'; document.getElementById('scoreWrap').style.display='none'; }
 });
 </script>
 </body>
