@@ -10,7 +10,7 @@ const io = new Server(server, { pingInterval: 25000, pingTimeout: 20000 });
 
 app.use(express.static(path.join(__dirname, 'public')));
 
-// Root -> pool.html
+// Root -> pool.html (så "Cannot GET /" aldrig händer)
 app.get('/', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'pool.html'));
 });
@@ -62,11 +62,11 @@ const lastChatAt = new Map(); // socketId -> timestamp
 const TICK_MS = 16;                      // ~60fps
 const W = 1080, H = 540;                 // bordstorlek
 const MARGIN = 30;                       // rails
-const R = 12;                            // större bollar
-const POCKET_R = 24;                     // fickradie (funnel)
+const R = 10;                            // bollradie
+const POCKET_R = 18;                     // fickradie
 const FRICTION = 0.992;                  // friktion per tick
 const STOP_EPS = 0.04;                   // tröskel för vila
-const CUE_IMPULSE = 9.5;                 // kraft-multiplikator
+const CUE_IMPULSE = 9.5;                 // kraft-multiplikator (lite punchy)
 const MAX_SHOT_POWER = 1.0;
 
 const POCKETS = [
@@ -77,9 +77,14 @@ const POCKETS = [
   { x: W / 2, y: H - MARGIN },
   { x: W - MARGIN, y: H - MARGIN },
 ];
+
+// Hjälpare: är en punkt nära ficka (för att hindra placering där)?
 function nearPocket(x, y) {
   const rr = (POCKET_R + R - 2) * (POCKET_R + R - 2);
-  for (const p of POCKETS) { const dx=x-p.x, dy=y-p.y; if (dx*dx+dy*dy <= rr) return true; }
+  for (const p of POCKETS) {
+    const dx = x - p.x, dy = y - p.y;
+    if (dx * dx + dy * dy <= rr) return true;
+  }
   return false;
 }
 
@@ -91,8 +96,7 @@ const BALLS = {
 
 function rackLayout() {
   const startX = W * 0.66, startY = H / 2;
-  const dx = 2 * R + 0.5;
-  const dy = Math.sqrt(3) * R;
+  const dx = R * 2 + 0.5, dy = R * 1.73;
   const order = [1,2,3,4,5,6,7,8, 9,10,11,12,13,14,15];
   for (let i = order.length - 1; i > 0; i--) {
     const j = (Math.random() * (i + 1)) | 0; [order[i], order[j]] = [order[j], order[i]];
@@ -125,14 +129,14 @@ class Match {
     this.balls = rackLayout();
     this.groups = { [left.id]: null, [right.id]: null }; // solid/stripe
     this.legalToEight = { [left.id]: false, [right.id]: false };
-    this.ballInHand = false;
+    this.ballInHand = true;                // <— ÖPPNINGSPLACERING
     this.waitingShot = true;
     this.anyPottedThisTurn = [];
     this.foulThisTurn = false;
 
-    // Spårning
+    // NYTT: spåra vem som sänkt vilka bollar + ”ingen träff”
     this.pottedBy = { [left.id]: [], [right.id]: [] };
-    this.firstContactMade = false; // ”ingen träff”-foul
+    this.firstContactMade = false;
 
     this.timer = null;
     this.lastSent = 0; // nät-throttle
@@ -163,15 +167,17 @@ class Match {
     const [nx, ny] = norm(dx, dy);
     cue.vx += nx * CUE_IMPULSE * p;
     cue.vy += ny * CUE_IMPULSE * p;
-
     this.waitingShot = false;
     this.anyPottedThisTurn.length = 0;
     this.foulThisTurn = false;
-    this.firstContactMade = false; // återställ per stöt
+    this.firstContactMade = false;   // återställ för träffkontroll
   }
 
   tick() {
-    if (this.waitingShot) { this.sendState(); return; }
+    if (this.waitingShot) {
+      this.sendState();
+      return;
+    }
 
     this.integrate();
     this.handleCollisions();
@@ -190,13 +196,11 @@ class Match {
       if (b.potted) continue;
       b.x += b.vx; b.y += b.vy;
       b.vx *= FRICTION; b.vy *= FRICTION;
-
-      // rails (undvik studs rakt i fickor – funnellogik)
-      if (b.x <= MARGIN + R && !nearPocket(b.x, b.y)) { b.x = MARGIN + R; b.vx = Math.abs(b.vx); }
-      if (b.x >= W - MARGIN - R && !nearPocket(b.x, b.y)) { b.x = W - MARGIN - R; b.vx = -Math.abs(b.vx); }
-      if (b.y <= MARGIN + R && !nearPocket(b.x, b.y)) { b.y = MARGIN + R; b.vy = Math.abs(b.vy); }
-      if (b.y >= H - MARGIN - R && !nearPocket(b.x, b.y)) { b.y = H - MARGIN - R; b.vy = -Math.abs(b.vy); }
-
+      // rails
+      if (b.x <= MARGIN + R) { b.x = MARGIN + R; b.vx = Math.abs(b.vx); }
+      if (b.x >= W - MARGIN - R) { b.x = W - MARGIN - R; b.vx = -Math.abs(b.vx); }
+      if (b.y <= MARGIN + R) { b.y = MARGIN + R; b.vy = Math.abs(b.vy); }
+      if (b.y >= H - MARGIN - R) { b.y = H - MARGIN - R; b.vy = -Math.abs(b.vy); }
       if (Math.abs(b.vx) < STOP_EPS) b.vx = 0;
       if (Math.abs(b.vy) < STOP_EPS) b.vy = 0;
     }
@@ -223,7 +227,7 @@ class Match {
           a.vx += nx * p; a.vy += ny * p;
           b.vx -= nx * p; b.vy -= ny * p;
 
-          // första kontakt mellan cue och annan boll?
+          // markera att cue träffat någon boll
           if (!this.firstContactMade) {
             if ((a.id === BALLS.cue && b.id !== BALLS.cue) ||
                 (b.id === BALLS.cue && a.id !== BALLS.cue)) {
@@ -249,47 +253,23 @@ class Match {
     }
   }
 
-  // placera tillbaka en boll på ledig plats (slump)
-  respotBall(id) {
-    const ball = this.balls.find(b => b.id === id);
-    if (!ball) return false;
-    for (let tries = 0; tries < 300; tries++) {
-      const x = W*0.5 + (Math.random()-0.5) * 300;
-      const y = H*0.5 + (Math.random()-0.5) * 200;
-      const xx = Math.min(W - MARGIN - R, Math.max(MARGIN + R, x));
-      const yy = Math.min(H - MARGIN - R, Math.max(MARGIN + R, y));
-      let ok = true;
-      for (const b of this.balls) {
-        if (b === ball || b.potted) continue;
-        const dx = b.x - xx, dy = b.y - yy;
-        if (dx*dx + dy*dy < (2*R)*(2*R)) { ok = false; break; }
-      }
-      if (!ok) continue;
-      if (nearPocket(xx, yy)) continue;
-
-      ball.x = xx; ball.y = yy; ball.vx = ball.vy = 0; ball.potted = false;
-      return true;
-    }
-    return false;
-  }
-
   resolveTurn() {
     const me = this.current;
     const opp = this.players.find(id => id !== me);
 
-    // foul: scratch eller ingen kontakt
+    // foul: scratch eller ingen träff alls
     if (this.anyPottedThisTurn.includes(BALLS.cue) || !this.firstContactMade) {
       const cue = this.balls.find(b => b.id === BALLS.cue);
       if (this.anyPottedThisTurn.includes(BALLS.cue)) {
         cue.potted = false; cue.x = W * 0.25; cue.y = H * 0.5; cue.vx = cue.vy = 0;
       }
-      this.ballInHand = true;          // nästa spelare får placera
+      this.ballInHand = true;   // motståndaren får placera
       this.foulThisTurn = true;
     } else {
       this.ballInHand = false;
     }
 
-    // kreditera sänkta bollar till skytt
+    // kreditera sänkningar till skytten (för UI-listor)
     for (const id of this.anyPottedThisTurn) {
       if (id !== BALLS.cue && id !== BALLS.eight) this.pottedBy[me].push(id);
     }
@@ -317,40 +297,17 @@ class Match {
       const legal = this.legalToEight[me] && !this.foulThisTurn;
       const winner = legal ? me : opp;
       const loser = legal ? opp : me;
-      this.endMatch(winner, loser); return;
-    }
-
-    // fel grupp? -> respot en egen ”rätt” boll
-    let sankFelGrupp = false;
-    if (this.groups[me]) {
-      const mineIsSolid = this.groups[me] === 'solid';
-      for (const id of this.anyPottedThisTurn) {
-        if (id === BALLS.cue || id === BALLS.eight) continue;
-        const isSolid = BALLS.solids.includes(id);
-        if (isSolid !== mineIsSolid) { sankFelGrupp = true; break; }
-      }
-      if (sankFelGrupp) {
-        const myList = this.pottedBy[me];
-        const ownGroupIds = myList.filter(id => (BALLS.solids.includes(id)) === mineIsSolid);
-        if (ownGroupIds.length > 0) {
-          const takeBack = ownGroupIds[(Math.random()*ownGroupIds.length)|0];
-          const idx = myList.indexOf(takeBack);
-          if (idx !== -1) myList.splice(idx, 1);
-          this.respotBall(takeBack);
-        }
-      }
+      this.endMatch(winner, loser);
+      return;
     }
 
     // turbyte/fortsatt tur
-    const scoredMine = (() => {
-      const grp = this.groups[me]; if (!grp) return this.anyPottedThisTurn.length > 0 && !this.foulThisTurn;
-      return this.anyPottedThisTurn.some(id =>
-        id !== BALLS.cue && id !== BALLS.eight &&
-        ((grp === 'solid' && BALLS.solids.includes(id)) ||
-         (grp === 'stripe' && BALLS.stripes.includes(id))));
-    })();
-
-    if (this.foulThisTurn || sankFelGrupp || !scoredMine) this.current = opp;
+    const scoredMine = this.anyPottedThisTurn.some(id => {
+      const grp = this.groups[me]; if (!grp) return false;
+      return (grp === 'solid' && BALLS.solids.includes(id)) ||
+             (grp === 'stripe' && BALLS.stripes.includes(id));
+    });
+    if (this.foulThisTurn || !scoredMine) this.current = opp;
 
     this.anyPottedThisTurn.length = 0;
     this.foulThisTurn = false;
@@ -360,6 +317,7 @@ class Match {
     const wName = this.names[winner] || 'Spelare';
     wins.push({ name: wName, ts: Date.now() });
     broadcastScoreboard();
+
     io.to('lobby').emit('chat:system', `${wName} VANN MATCHEN!! STORT GRATTIS!`);
 
     io.to(this.roomId).emit('pool:match:end', {
@@ -371,7 +329,7 @@ class Match {
 
     this.stop();
 
-    // kasta båda ur kön
+    // kasta båda ur kön (kräv aktivt "Gå med i kön" igen)
     removeFromQueue(winner); removeFromQueue(loser);
 
     const wSock = io.sockets.sockets.get(winner);
@@ -397,13 +355,13 @@ class Match {
       legalToEight: this.legalToEight,
       ballInHand: this.ballInHand,
       waitingShot: this.waitingShot,
-      pottedBy: this.pottedBy
+      pottedBy: this.pottedBy          // <— skickas till klienten
     };
   }
 
   sendState() {
     const now = Date.now();
-    if (now - this.lastSent < 33) return; // ~30 fps
+    if (now - this.lastSent < 33) return; // ~30 fps till klienten
     this.lastSent = now;
     io.to(this.roomId).emit('pool:state', this.snapshot());
   }
@@ -476,7 +434,10 @@ io.on('connection', (socket) => {
   // chatt: krav att stå i kön + cooldown
   socket.on('chat:message', ({ text }) => {
     const now = Date.now();
-    if (!isInQueue(socket.id)) { socket.emit('chat:error', 'Du måste vara i kön för att chatta.'); return; }
+    if (!isInQueue(socket.id)) {
+      socket.emit('chat:error', 'Du måste vara i kön för att chatta.');
+      return;
+    }
     const last = lastChatAt.get(socket.id) || 0;
     const diff = now - last;
     if (diff < CHAT_COOLDOWN_MS) {
@@ -539,29 +500,21 @@ io.on('connection', (socket) => {
     m.shot(socket.id, { dx, dy, power, place });
   });
 
-  // **NYTT**: faktisk fri placering vid ball-in-hand
+  // Placering av vit boll vid ball-in-hand (öppning + foul efter miss/scratch)
   socket.on('pool:place', ({ roomId, x, y }) => {
-    const m = matches.get(roomId);
-    if (!m) return;
+    const m = matches.get(roomId); if (!m) return;
     if (!m.players.includes(socket.id)) return;
     if (m.current !== socket.id) return;
     if (!m.ballInHand || !m.waitingShot) return;
 
-    const R = m.snapshot().r;
-    const M = m.snapshot().m;
-    const W = m.snapshot().w;
-    const H = m.snapshot().h;
+    // Begränsa inom bordet
+    let nx = Math.min(W - MARGIN - R, Math.max(MARGIN + R, x));
+    let ny = Math.min(H - MARGIN - R, Math.max(MARGIN + R, y));
 
-    let nx = Math.min(W - M - R, Math.max(M + R, x));
-    let ny = Math.min(H - M - R, Math.max(M + R, y));
+    // Inte nära pockets
+    if (nearPocket(nx, ny)) return;
 
-    const pr = m.snapshot().pr;
-    const nearP = m.snapshot().pockets.some(p => {
-      const dx = nx - p.x, dy = ny - p.y;
-      return (dx*dx + dy*dy) <= (pr - 4) * (pr - 4);
-    });
-    if (nearP) return;
-
+    // Inte över annan boll
     for (const b of m.balls) {
       if (b.id === 0 || b.potted) continue;
       const dx = nx - b.x, dy = ny - b.y;
@@ -569,10 +522,9 @@ io.on('connection', (socket) => {
     }
 
     const cue = m.balls.find(b => b.id === 0);
-    cue.potted = false;
-    cue.vx = cue.vy = 0;
-    cue.x = nx;
-    cue.y = ny;
+    cue.potted = false; cue.vx = cue.vy = 0;
+    cue.x = nx; cue.y = ny;
+
     m.sendState();
   });
 });
