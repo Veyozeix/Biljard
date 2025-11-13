@@ -378,7 +378,6 @@ document.addEventListener('DOMContentLoaded', ()=>{
     const cue = s.balls.find(b=>b.id===0);
     if(!cue || cue.potted) return;
 
-    // VÄND: vektor från köboll mot mus (inte tvärtom)
     const dx = (aim.ex||cue.x) - cue.x;
     const dy = (aim.ey||cue.y) - cue.y;
     const ang = Math.atan2(dy, dx);
@@ -424,7 +423,7 @@ document.addEventListener('DOMContentLoaded', ()=>{
 
     ctx.save();
 
-    // 1) vanlig siktrad
+    /* 1) Grund-sikte från vit → sikte */
     ctx.setLineDash([6,5]);
     ctx.strokeStyle = 'rgba(255,255,255,0.6)';
     ctx.lineWidth = 2;
@@ -433,9 +432,13 @@ document.addEventListener('DOMContentLoaded', ()=>{
     ctx.lineTo(targetX, targetY);
     ctx.stroke();
 
-    // 2) sikte mot första boll + objektbollens bana
+    /* 2) Nybörjarhjälp: objektbollens verkliga bana.
+       – Vi hittar första bollen längs strålen.
+       – Objektbollens riktning = linjen mellan bollarnas centrum
+         (alltså från vita → objektboll). */
     const hit = findAimTarget(s, cue, dirX, dirY);
     if (hit){
+      // linje till träffpunkten
       ctx.setLineDash([4,4]);
       ctx.strokeStyle = 'rgba(255,255,255,0.4)';
       ctx.lineWidth = 1.5;
@@ -444,17 +447,26 @@ document.addEventListener('DOMContentLoaded', ()=>{
       ctx.lineTo(hit.ix, hit.iy);
       ctx.stroke();
 
+      // riktning för objektbollen = line-of-centers
+      const odx = hit.ball.x - cue.x;
+      const ody = hit.ball.y - cue.y;
+      const olen = Math.hypot(odx, ody) || 1;
+      const oDirX = odx / olen;
+      const oDirY = ody / olen;
+
       const objLen = 140;
-      const ox2 = hit.ball.x + dirX*objLen;
-      const oy2 = hit.ball.y + dirY*objLen;
+      const ox2 = hit.ball.x + oDirX*objLen;
+      const oy2 = hit.ball.y + oDirY*objLen;
+
       ctx.setLineDash([3,6]);
-      ctx.strokeStyle = 'rgba(231,255,110,0.75)';
+      ctx.strokeStyle = 'rgba(231,255,110,0.8)';
       ctx.lineWidth = 2;
       ctx.beginPath();
       ctx.moveTo(hit.ball.x, hit.ball.y);
       ctx.lineTo(ox2, oy2);
       ctx.stroke();
 
+      // highlight-ring runt objektbollen
       ctx.setLineDash([]);
       ctx.beginPath();
       ctx.arc(hit.ball.x, hit.ball.y, s.r+3, 0, Math.PI*2);
@@ -523,7 +535,6 @@ document.addEventListener('DOMContentLoaded', ()=>{
       const pp = toCanvasPoint(ev.clientX, ev.clientY); aim.ex=pp.x; aim.ey=pp.y;
       const cue = snapshot.balls.find(b=>b.id===0); if(!cue){ cleanup(); return; }
 
-      // VÄND: skicka vektor från köboll mot sikte
       const dx = aim.ex - cue.x;
       const dy = aim.ey - cue.y;
       const power = Math.min(1, Math.hypot(dx,dy)/160);
