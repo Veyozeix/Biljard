@@ -73,11 +73,11 @@ canvas{ background:#083223; border:2px solid #153b2a; border-radius:12px; width:
 .tray .row .lbl{ font-weight:700; color:#e9f1e6; }
 .tray-left{ right:100%; margin-right:10px } .tray-right{ left:100%; margin-left:10px }
 
-/* Placering-hint i mitten – fånga INTE klick */
+/* Placering-hint i mitten – låt klick gå igenom */
 .center-hint{
   position:absolute; inset:0; display:none; place-items:center;
   background:rgba(6,26,18,.55); border-radius:12px;
-  pointer-events: none; /* <-- låt klick gå igenom till canvas */
+  pointer-events: none;
 }
 .center-hint .inner{
   text-align:center; padding:18px 22px; background:#0e2219; border:1px solid #143425; border-radius:12px;
@@ -86,7 +86,7 @@ canvas{ background:#083223; border:2px solid #153b2a; border-radius:12px; width:
 .center-hint .title{ font-size:28px; font-weight:800; letter-spacing:1px; color:var(--accent); }
 .center-hint .sub{ margin-top:6px; color:var(--muted); }
 
-/* Game-end overlay (oförändrad) */
+/* Match slut overlay */
 .overlay{ position:absolute; inset:0; display:none; align-items:center; justify-content:center; background:rgba(6,26,18,.75); border-radius:12px; }
 .overlay .inner{ text-align:center; padding:24px; max-width:90%; }
 .big-title{ font-size:56px; letter-spacing:6px; color:var(--accent); font-weight:800; margin-bottom:12px; }
@@ -187,7 +187,7 @@ document.addEventListener('DOMContentLoaded', ()=>{
 
   const socket = io();
 
-  /* --- Chat / Scoreboard / Kö (oförändrat) --- */
+  /* --- Chat: i kön + cooldown --- */
   let inQueue=false, cd=null, canSend=false;
   function setChatEnabled(x){ chatText.disabled=!x; chatSend.disabled=!x; }
   function startCooldown(s=5){
@@ -204,6 +204,7 @@ document.addEventListener('DOMContentLoaded', ()=>{
   socket.on('chat:system', appendSys);
   socket.on('chat:error', msg=>{ appendSys(msg); });
 
+  /* --- Scoreboard render --- */
   function renderScoreboard(list){
     if(!Array.isArray(list)||list.length===0){
       scoreList.innerHTML = `<div class="empty">Ingen har vunnit en match de senaste 24 timmarna.</div>`;
@@ -213,6 +214,7 @@ document.addEventListener('DOMContentLoaded', ()=>{
   }
   socket.on('score:update', renderScoreboard);
 
+  /* --- Kö UI --- */
   function resetLobbyBtns(){ nameInput.disabled=false; updateJoin(); leaveBtn.style.display='none'; }
   joinBtn.addEventListener('click', ()=>{ const n=nameInput.value.trim(); if(!n)return; socket.emit('queue:join', n); leaveBtn.style.display='inline-block'; joinBtn.disabled=true; nameInput.disabled=true; });
   leaveBtn.addEventListener('click', ()=> socket.emit('queue:leave'));
@@ -220,6 +222,7 @@ document.addEventListener('DOMContentLoaded', ()=>{
   socket.on('queue:left',  ()=>{ inQueue=false; canSend=false; setChatEnabled(false); resetLobbyBtns(); });
   socket.on('queue:update', ({count,names})=>{ countEl.textContent=count; namesEl.innerHTML = names.map(n=>`<span class="pill">${n}</span>`).join(''); });
 
+  /* --- Layout helpers --- */
   function setLobbyLayout(){ document.body.classList.remove('game'); layout.classList.add('lobby'); layout.classList.remove('onecol'); chatPanel.style.display='flex'; el('scoreWrap').style.display='block'; }
   function setGameLayout(){ document.body.classList.add('game'); layout.classList.remove('lobby'); layout.classList.add('onecol'); chatPanel.style.display='none'; el('scoreWrap').style.display='none'; }
 
@@ -229,6 +232,7 @@ document.addEventListener('DOMContentLoaded', ()=>{
 
   let aim = { down:false, sx:0, sy:0, ex:0, ey:0, power:0, placing:false };
 
+  // roundRect polyfill
   if (!CanvasRenderingContext2D.prototype.roundRect) {
     CanvasRenderingContext2D.prototype.roundRect = function(x,y,w,h,r){
       const rr = Math.min(r, w/2, h/2);
@@ -244,16 +248,20 @@ document.addEventListener('DOMContentLoaded', ()=>{
 
   function drawTable(s){
     ctx.clearRect(0,0,c.width,c.height);
+    // trä
     const woodGrad = ctx.createLinearGradient(0,0,0,c.height);
     woodGrad.addColorStop(0, '#5a2f19'); woodGrad.addColorStop(1, '#3b1d0f');
     ctx.fillStyle = woodGrad; ctx.fillRect(0,0,c.width,c.height);
+    // rails
     ctx.fillStyle = '#165239';
     ctx.fillRect(0,0,c.width,s.m);
     ctx.fillRect(0,c.height-s.m,c.width,s.m);
     ctx.fillRect(0,0,s.m,c.height);
     ctx.fillRect(c.width-s.m,0,s.m,c.height);
+    // filt
     ctx.fillStyle = '#0f6b47';
     ctx.fillRect(s.m, s.m, c.width-2*s.m, c.height-2*s.m);
+    // fickor
     for(const p of s.pockets){
       ctx.beginPath(); ctx.arc(p.x+2, p.y+2, s.pr, 0, Math.PI*2);
       ctx.fillStyle='rgba(0,0,0,0.35)'; ctx.fill();
@@ -262,6 +270,7 @@ document.addEventListener('DOMContentLoaded', ()=>{
     }
   }
 
+  // riktiga 8-ball färger
   const COLORS = {
     0:'#f7f1de', 1:'#ffd400', 2:'#2c6cff', 3:'#e54b3c', 4:'#7b4dff',
     5:'#ff8a00', 6:'#1e9e58', 7:'#7b2d2d', 8:'#000000',
@@ -271,15 +280,25 @@ document.addEventListener('DOMContentLoaded', ()=>{
   function ballColor(id){ return COLORS[id] || '#e9f1e6'; }
 
   function drawBallShaded(x, y, r, base, number){
+    // skugga
     ctx.beginPath(); ctx.arc(x+1.5,y+1.5,r,0,Math.PI*2);
     ctx.fillStyle='rgba(0,0,0,0.25)'; ctx.fill();
+    // kropp
     const g = ctx.createRadialGradient(x-r*0.4, y-r*0.4, r*0.2, x, y, r);
-    g.addColorStop(0, '#ffffff'); g.addColorStop(0.15, base); g.addColorStop(1, '#1e1e1e');
+    g.addColorStop(0, '#ffffff');
+    g.addColorStop(0.15, base);
+    g.addColorStop(1, '#1e1e1e');
     ctx.beginPath(); ctx.arc(x,y,r,0,Math.PI*2); ctx.fillStyle=g; ctx.fill();
-    if(number>=9 && number<=15){ ctx.beginPath(); ctx.arc(x,y,r*0.67,0,Math.PI*2); ctx.fillStyle='#f1f9f6'; ctx.fill(); }
+    // stripes
+    if(number>=9 && number<=15){
+      ctx.beginPath(); ctx.arc(x,y,r*0.67,0,Math.PI*2);
+      ctx.fillStyle='#f1f9f6'; ctx.fill();
+    }
+    // nummerplatta (alltid vit platta, svart text)
     if(number!==0){
       ctx.beginPath(); ctx.arc(x,y,r*0.45,0,Math.PI*2); ctx.fillStyle='#f1f1f1'; ctx.fill();
-      ctx.fillStyle = '#000'; ctx.font=`${Math.floor(r*1.1)}px Nunito`; ctx.textAlign='center'; ctx.textBaseline='middle';
+      ctx.fillStyle = '#000';
+      ctx.font=`${Math.floor(r*1.1)}px Nunito`; ctx.textAlign='center'; ctx.textBaseline='middle';
       ctx.fillText(String(number), x, y+0.5);
     }
   }
@@ -291,23 +310,30 @@ document.addEventListener('DOMContentLoaded', ()=>{
     }
   }
 
+  // TRAYS – en rad per boll med liten ikon
   function renderTrays(s){
     trayLeftName.textContent = s.names[s.players[0]] || 'Spelare';
     trayRightName.textContent = s.names[s.players[1]] || 'Spelare';
 
     function rowFor(num){
-      const wrap = document.createElement('div'); wrap.className = 'row';
-      const icon = document.createElement('canvas'); icon.width = icon.height = 30;
-      const c2 = icon.getContext('2d'); const r = 12;
+      const wrap = document.createElement('div');
+      wrap.className = 'row';
+      const icon = document.createElement('canvas');
+      icon.width = icon.height = 30;
+      const c2 = icon.getContext('2d');
+      const r = 12;
+      // liten skugga
       c2.beginPath(); c2.arc(15,15,r,0,Math.PI*2); c2.fillStyle='rgba(0,0,0,.25)'; c2.fill();
-      const g = c2.createRadialGradient(15 - r*0.3, 15 - r*0.3, r*0.2, 15, 15, r);
+      const g = c2.createRadialGradient(15-r*0.3, 15-r*0.3, r*0.2, 15, 15, r);
       g.addColorStop(0,'#fff'); g.addColorStop(0.15, COLORS[num] || '#e9f1e6'); g.addColorStop(1,'#1e1e1e');
       c2.beginPath(); c2.arc(15,15,r,0,Math.PI*2); c2.fillStyle=g; c2.fill();
       if(num>=9 && num<=15){ c2.beginPath(); c2.arc(15,15,r*0.67,0,Math.PI*2); c2.fillStyle='#f1f9f6'; c2.fill(); }
       if(num!==0){ c2.beginPath(); c2.arc(15,15,r*0.45,0,Math.PI*2); c2.fillStyle='#f1f1f1'; c2.fill();
         c2.fillStyle='#000'; c2.font='13px Nunito'; c2.textAlign='center'; c2.textBaseline='middle'; c2.fillText(String(num),15,15.5); }
-      const lbl = document.createElement('div'); lbl.className='lbl'; lbl.textContent = `Boll ${num}`;
-      wrap.appendChild(icon); wrap.appendChild(lbl); return wrap;
+      const lbl = document.createElement('div');
+      lbl.className='lbl'; lbl.textContent = `Boll ${num}`;
+      wrap.appendChild(icon); wrap.appendChild(lbl);
+      return wrap;
     }
 
     function fill(listEl, arr){
@@ -323,19 +349,34 @@ document.addEventListener('DOMContentLoaded', ()=>{
     if(!snapshot || snapshot.waitingShot!==true) return;
     if(current!==selfId) return;
     if (s.ballInHand) return;
+    const cue = s.balls.find(b=>b.id===0);
+    if(!cue || cue.potted) return;
 
-    const cue = s.balls.find(b=>b.id===0); if(!cue || cue.potted) return;
-    const dx = cue.x - (aim.ex||cue.x), dy = cue.y - (aim.ey||cue.y);
+    const dx = cue.x - (aim.ex||cue.x);
+    const dy = cue.y - (aim.ey||cue.y);
     const ang = Math.atan2(dy, dx);
+
     const offset = 18 + (aim.power||0)*40;
     const px = cue.x - Math.cos(ang) * offset;
     const py = cue.y - Math.sin(ang) * offset;
+
     const L = 260, W = 7;
-    ctx.save(); ctx.translate(px, py); ctx.rotate(ang);
+    ctx.save();
+    ctx.translate(px, py);
+    ctx.rotate(ang);
+
     const grad = ctx.createLinearGradient(-L, 0, 0, 0);
-    grad.addColorStop(0, '#111'); grad.addColorStop(0.2, '#b07d45'); grad.addColorStop(0.95, '#eac089'); grad.addColorStop(1, '#f7d6a1');
-    ctx.fillStyle = grad; ctx.beginPath(); ctx.roundRect(-L, -W/2, L, W, 3); ctx.fill();
-    ctx.fillStyle = '#f2f2f2'; ctx.fillRect(-2, -W/2, 8, W);
+    grad.addColorStop(0, '#111');
+    grad.addColorStop(0.2, '#b07d45');
+    grad.addColorStop(0.95, '#eac089');
+    grad.addColorStop(1, '#f7d6a1');
+
+    ctx.fillStyle = grad;
+    ctx.beginPath(); ctx.roundRect(-L, -W/2, L, W, 3); ctx.fill();
+
+    ctx.fillStyle = '#f2f2f2';  // tip
+    ctx.fillRect(-2, -W/2, 8, W);
+
     ctx.restore();
   }
 
@@ -343,9 +384,18 @@ document.addEventListener('DOMContentLoaded', ()=>{
     if(!snapshot || snapshot.waitingShot!==true) return;
     if(current!==selfId) return;
     if (s.ballInHand) return;
-    const cue = s.balls.find(b=>b.id===0); if(!cue || cue.potted) return;
-    ctx.setLineDash([6,5]); ctx.strokeStyle = 'rgba(255,255,255,0.6)'; ctx.lineWidth = 2;
-    ctx.beginPath(); ctx.moveTo(cue.x, cue.y); ctx.lineTo(aim.ex||cue.x, aim.ey||cue.y); ctx.stroke(); ctx.setLineDash([]);
+    const cue = s.balls.find(b=>b.id===0);
+    if(!cue || cue.potted) return;
+
+    ctx.setLineDash([6,5]);
+    ctx.strokeStyle = 'rgba(255,255,255,0.6)';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(cue.x, cue.y);
+    ctx.lineTo(aim.ex||cue.x, aim.ey||cue.y);
+    ctx.stroke();
+    ctx.setLineDash([]);
+
     const p = Math.min(1, Math.hypot((aim.ex||cue.x)-cue.x, (aim.ey||cue.y)-cue.y)/160);
     aim.power = p;
     const w = 160, h = 10, x = c.width - w - 20, y = 20;
@@ -378,8 +428,7 @@ document.addEventListener('DOMContentLoaded', ()=>{
     if (game.style.display !== 'none') render();
   });
 
-  // ENDAST klick för placering när ball-in-hand (pinnen ej synlig då)
-  const c = document.getElementById('tbl');
+  // klick-placering vid ball-in-hand
   c.addEventListener('click', e => {
     if (!snapshot || !snapshot.waitingShot || current!==selfId) return;
     if (!snapshot.ballInHand) return;
@@ -387,7 +436,7 @@ document.addEventListener('DOMContentLoaded', ()=>{
     socket.emit('pool:place', { roomId, x: p.x, y: p.y });
   });
 
-  // Dra för skott – tillåt drag utanför canvas
+  // dra för skott – tillåt drag utanför canvas
   let onMove=null;
   c.addEventListener('mousedown', e=>{
     if(!snapshot || snapshot.waitingShot!==true || current!==selfId) return;
@@ -437,7 +486,6 @@ document.addEventListener('DOMContentLoaded', ()=>{
 
   let countdown=null;
   socket.on('pool:match:end', ({winnerId, loserId, winnerName})=>{
-    const overlay = document.getElementById('overlay'), ovTitle=document.getElementById('ovTitle'), ovActions=document.getElementById('ovActions'), ovTimer=document.getElementById('ovTimer');
     ovTitle.textContent = `${winnerName||'Spelare'} VANN!!!`;
     overlay.style.display='flex'; ovActions.innerHTML=''; ovTimer.textContent='';
     const iWon = winnerId===selfId;
@@ -455,12 +503,15 @@ document.addEventListener('DOMContentLoaded', ()=>{
   });
 
   socket.on('pool:opponent-left', ()=>{ backToLobby(); });
+
+  // snapshots vid anslutning hanteras server-side
   socket.on('queue:update', ({count,names})=>{ countEl.textContent=count; namesEl.innerHTML = names.map(n=>`<span class="pill">${n}</span>`).join(''); });
 
-  document.getElementById('exit').addEventListener('click', ()=> window.location.reload());
+  // Exit
+  el('exit').addEventListener('click', ()=> window.location.reload());
 
-  function setLobbyLayout(){ document.body.classList.remove('game'); layout.classList.add('lobby'); layout.classList.remove('onecol'); chatPanel.style.display='flex'; document.getElementById('scoreWrap').style.display='block'; }
-  function setGameLayout(){ document.body.classList.add('game'); layout.classList.remove('lobby'); layout.classList.add('onecol'); chatPanel.style.display='none'; document.getElementById('scoreWrap').style.display='none'; }
+  function setLobbyLayout(){ document.body.classList.remove('game'); layout.classList.add('lobby'); layout.classList.remove('onecol'); chatPanel.style.display='flex'; el('scoreWrap').style.display='block'; }
+  function setGameLayout(){ document.body.classList.add('game'); layout.classList.remove('lobby'); layout.classList.add('onecol'); chatPanel.style.display='none'; el('scoreWrap').style.display='none'; }
 });
 </script>
 </body>
