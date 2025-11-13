@@ -344,6 +344,33 @@ document.addEventListener('DOMContentLoaded', ()=>{
     fill(trayRightList, s.pottedBy[s.players[1]]);
   }
 
+  // --- AIMING HELP: hitta första boll längs riktningen ---
+  function findAimTarget(state, cue, dirX, dirY){
+    const R = state.r;
+    let bestT = Infinity;
+    let target = null;
+    // ray-sphere (2D) intersection: (cue + d t - c)^2 = (2R)^2
+    for (const b of state.balls){
+      if (b.id === 0 || b.potted) continue;
+      const vx = cue.x - b.x;
+      const vy = cue.y - b.y;
+      const dot = vx*dirX + vy*dirY;
+      const cval = vx*vx + vy*vy - (4*R*R);
+      const disc = dot*dot - cval;
+      if (disc < 0) continue;
+      const t = -dot - Math.sqrt(disc);
+      if (t <= 0) continue;
+      if (t < bestT){
+        bestT = t;
+        target = b;
+      }
+    }
+    if (!target || !isFinite(bestT)) return null;
+    const ix = cue.x + dirX*bestT;
+    const iy = cue.y + dirY*bestT;
+    return { ball: target, t: bestT, ix, iy };
+  }
+
   // RITA INTE kö-sticken om ball-in-hand gäller
   function drawCueStick(s){
     if(!snapshot || snapshot.waitingShot!==true) return;
@@ -387,20 +414,68 @@ document.addEventListener('DOMContentLoaded', ()=>{
     const cue = s.balls.find(b=>b.id===0);
     if(!cue || cue.potted) return;
 
+    const targetX = aim.ex||cue.x;
+    const targetY = aim.ey||cue.y;
+    const dx = targetX - cue.x;
+    const dy = targetY - cue.y;
+    const len = Math.hypot(dx,dy) || 1;
+    const dirX = dx/len;
+    const dirY = dy/len;
+
+    ctx.save();
+
+    // 1) vanlig siktrad
     ctx.setLineDash([6,5]);
     ctx.strokeStyle = 'rgba(255,255,255,0.6)';
     ctx.lineWidth = 2;
     ctx.beginPath();
     ctx.moveTo(cue.x, cue.y);
-    ctx.lineTo(aim.ex||cue.x, aim.ey||cue.y);
+    ctx.lineTo(targetX, targetY);
     ctx.stroke();
+
+    // 2) sikte mot första boll + objektbollens bana
+    const hit = findAimTarget(s, cue, dirX, dirY);
+    if (hit){
+      // linje från cue till träffpunkt
+      ctx.setLineDash([4,4]);
+      ctx.strokeStyle = 'rgba(255,255,255,0.4)';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.moveTo(cue.x, cue.y);
+      ctx.lineTo(hit.ix, hit.iy);
+      ctx.stroke();
+
+      // objektbollens efter-bana
+      const objLen = 140;
+      const ox2 = hit.ball.x + dirX*objLen;
+      const oy2 = hit.ball.y + dirY*objLen;
+      ctx.setLineDash([3,6]);
+      ctx.strokeStyle = 'rgba(231,255,110,0.75)';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(hit.ball.x, hit.ball.y);
+      ctx.lineTo(ox2, oy2);
+      ctx.stroke();
+
+      // highlight runt bollen
+      ctx.setLineDash([]);
+      ctx.beginPath();
+      ctx.arc(hit.ball.x, hit.ball.y, s.r+3, 0, Math.PI*2);
+      ctx.strokeStyle='rgba(231,255,110,0.9)';
+      ctx.lineWidth=2;
+      ctx.stroke();
+    }
+
     ctx.setLineDash([]);
 
-    const p = Math.min(1, Math.hypot((aim.ex||cue.x)-cue.x, (aim.ey||cue.y)-cue.y)/160);
+    // 3) power-bar
+    const p = Math.min(1, Math.hypot(targetX-cue.x, targetY-cue.y)/160);
     aim.power = p;
     const w = 160, h = 10, x = c.width - w - 20, y = 20;
     ctx.strokeStyle = '#e7ff6e'; ctx.lineWidth=2; ctx.strokeRect(x,y,w,h);
     ctx.fillStyle = '#e7ff6e'; ctx.fillRect(x,y,w*p,h);
+
+    ctx.restore();
   }
 
   function render(){
