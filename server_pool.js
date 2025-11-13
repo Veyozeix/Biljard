@@ -78,7 +78,7 @@ const POCKETS = [
   { x: W - MARGIN, y: H - MARGIN },
 ];
 
-// Mindre strikt: tillåt placering nära fickor men inte inne i dem
+// Tillåt placering nära fickor men inte inne i dem
 function nearPocket(x, y) {
   const rr = (POCKET_R - 2) * (POCKET_R - 2);
   for (const p of POCKETS) {
@@ -130,14 +130,14 @@ class Match {
     this.groups = { [left.id]: null, [right.id]: null }; // solid/stripe
     this.legalToEight = { [left.id]: false, [right.id]: false };
 
-    this.ballInHand = true;                // <-- ÖPPNING: första spelaren får placera
+    this.ballInHand = true;                // ÖPPNING: första spelaren får placera
     this.waitingShot = true;
     this.anyPottedThisTurn = [];
     this.foulThisTurn = false;
 
-    // För UI + misslogik
+    // UI / regler
     this.pottedBy = { [left.id]: [], [right.id]: [] };
-    this.firstContactMade = false;
+    this.firstContactMade = false; // för "missade allt"
 
     this.timer = null;
     this.lastSent = 0; // nät-throttle
@@ -226,7 +226,7 @@ class Match {
           a.vx += nx * p; a.vy += ny * p;
           b.vx -= nx * p; b.vy -= ny * p;
 
-          // första kontakt mellan cue och någon annan boll
+          // första kontakt mellan cue och annan boll?
           if (!this.firstContactMade) {
             if ((a.id === BALLS.cue && b.id !== BALLS.cue) ||
                 (b.id === BALLS.cue && a.id !== BALLS.cue)) {
@@ -252,23 +252,46 @@ class Match {
     }
   }
 
+  // placera tillbaka en boll på ledig plats (slump)
+  respotBall(id) {
+    const ball = this.balls.find(b => b.id === id);
+    if (!ball) return false;
+    for (let tries = 0; tries < 300; tries++) {
+      const x = W*0.5 + (Math.random()-0.5) * 300;
+      const y = H*0.5 + (Math.random()-0.5) * 200;
+      const xx = Math.min(W - MARGIN - R, Math.max(MARGIN + R, x));
+      const yy = Math.min(H - MARGIN - R, Math.max(MARGIN + R, y));
+      let ok = true;
+      for (const b of this.balls) {
+        if (b === ball || b.potted) continue;
+        const dx = b.x - xx, dy = b.y - yy;
+        if (dx*dx + dy*dy < (2*R)*(2*R)) { ok = false; break; }
+      }
+      if (!ok) continue;
+      if (nearPocket(xx, yy)) continue;
+      ball.x = xx; ball.y = yy; ball.vx = ball.vy = 0; ball.potted = false;
+      return true;
+    }
+    return false;
+  }
+
   resolveTurn() {
     const me = this.current;
     const opp = this.players.find(id => id !== me);
 
-    // foul: scratch eller ingen träff alls
+    // foul: scratch eller ingen kontakt alls => motståndaren ball-in-hand
     if (this.anyPottedThisTurn.includes(BALLS.cue) || !this.firstContactMade) {
       const cue = this.balls.find(b => b.id === BALLS.cue);
       if (this.anyPottedThisTurn.includes(BALLS.cue)) {
         cue.potted = false; cue.x = W * 0.25; cue.y = H * 0.5; cue.vx = cue.vy = 0;
       }
-      this.ballInHand = true;   // motståndaren får placera
+      this.ballInHand = true;
       this.foulThisTurn = true;
     } else {
       this.ballInHand = false;
     }
 
-    // kreditera sänkningar till skytten (UI-listor)
+    // kreditera sänkta bollar till skytten (för UI)
     for (const id of this.anyPottedThisTurn) {
       if (id !== BALLS.cue && id !== BALLS.eight) this.pottedBy[me].push(id);
     }
@@ -300,13 +323,37 @@ class Match {
       return;
     }
 
+    // om grupper satta: sänkte skytten motståndarens boll?
+    let sankFelGrupp = false;
+    if (this.groups[me]) {
+      const mineIsSolid = this.groups[me] === 'solid';
+      for (const id of this.anyPottedThisTurn) {
+        if (id === BALLS.cue || id === BALLS.eight) continue;
+        const isSolid = BALLS.solids.includes(id);
+        if (isSolid !== mineIsSolid) { sankFelGrupp = true; break; }
+      }
+      if (sankFelGrupp) {
+        // ta bort en egen korrekt boll ur listan (om finns) och respotta den
+        const myList = this.pottedBy[me];
+        const ownGroupIds = myList.filter(id => (BALLS.solids.includes(id)) === mineIsSolid);
+        if (ownGroupIds.length > 0) {
+          const takeBack = ownGroupIds[(Math.random()*ownGroupIds.length)|0];
+          const idx = myList.indexOf(takeBack);
+          if (idx !== -1) myList.splice(idx, 1);
+          this.respotBall(takeBack);
+        }
+        // motståndaren får ball-in-hand
+        this.ballInHand = true;
+      }
+    }
+
     // turbyte/fortsatt tur
     const scoredMine = this.anyPottedThisTurn.some(id => {
       const grp = this.groups[me]; if (!grp) return false;
       return (grp === 'solid' && BALLS.solids.includes(id)) ||
              (grp === 'stripe' && BALLS.stripes.includes(id));
     });
-    if (this.foulThisTurn || !scoredMine) this.current = opp;
+    if (this.foulThisTurn || sankFelGrupp || !scoredMine) this.current = opp;
 
     this.anyPottedThisTurn.length = 0;
     this.foulThisTurn = false;
@@ -524,6 +571,8 @@ io.on('connection', (socket) => {
     cue.potted = false; cue.vx = cue.vy = 0;
     cue.x = nx; cue.y = ny;
 
+    // Efter placering visas kö-sticken (dvs. ball-in-hand avslutas)
+    m.ballInHand = false;
     m.sendState();
   });
 });
