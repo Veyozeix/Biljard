@@ -78,9 +78,9 @@ const POCKETS = [
   { x: W - MARGIN, y: H - MARGIN },
 ];
 
-// Hjälpare: är en punkt nära ficka (för att hindra placering där)?
+// Mindre strikt: tillåt placering nära fickor men inte inne i dem
 function nearPocket(x, y) {
-  const rr = (POCKET_R + R - 2) * (POCKET_R + R - 2);
+  const rr = (POCKET_R - 2) * (POCKET_R - 2);
   for (const p of POCKETS) {
     const dx = x - p.x, dy = y - p.y;
     if (dx * dx + dy * dy <= rr) return true;
@@ -129,12 +129,13 @@ class Match {
     this.balls = rackLayout();
     this.groups = { [left.id]: null, [right.id]: null }; // solid/stripe
     this.legalToEight = { [left.id]: false, [right.id]: false };
-    this.ballInHand = true;                // <— ÖPPNINGSPLACERING
+
+    this.ballInHand = true;                // <-- ÖPPNING: första spelaren får placera
     this.waitingShot = true;
     this.anyPottedThisTurn = [];
     this.foulThisTurn = false;
 
-    // NYTT: spåra vem som sänkt vilka bollar + ”ingen träff”
+    // För UI + misslogik
     this.pottedBy = { [left.id]: [], [right.id]: [] };
     this.firstContactMade = false;
 
@@ -167,17 +168,15 @@ class Match {
     const [nx, ny] = norm(dx, dy);
     cue.vx += nx * CUE_IMPULSE * p;
     cue.vy += ny * CUE_IMPULSE * p;
+
     this.waitingShot = false;
     this.anyPottedThisTurn.length = 0;
     this.foulThisTurn = false;
-    this.firstContactMade = false;   // återställ för träffkontroll
+    this.firstContactMade = false;  // för "missade allt"
   }
 
   tick() {
-    if (this.waitingShot) {
-      this.sendState();
-      return;
-    }
+    if (this.waitingShot) { this.sendState(); return; }
 
     this.integrate();
     this.handleCollisions();
@@ -188,7 +187,7 @@ class Match {
       this.waitingShot = true;
     }
 
-    this.sendState(); // alltid sända – mjuk animation
+    this.sendState(); // mjuk animation
   }
 
   integrate() {
@@ -227,7 +226,7 @@ class Match {
           a.vx += nx * p; a.vy += ny * p;
           b.vx -= nx * p; b.vy -= ny * p;
 
-          // markera att cue träffat någon boll
+          // första kontakt mellan cue och någon annan boll
           if (!this.firstContactMade) {
             if ((a.id === BALLS.cue && b.id !== BALLS.cue) ||
                 (b.id === BALLS.cue && a.id !== BALLS.cue)) {
@@ -269,7 +268,7 @@ class Match {
       this.ballInHand = false;
     }
 
-    // kreditera sänkningar till skytten (för UI-listor)
+    // kreditera sänkningar till skytten (UI-listor)
     for (const id of this.anyPottedThisTurn) {
       if (id !== BALLS.cue && id !== BALLS.eight) this.pottedBy[me].push(id);
     }
@@ -355,7 +354,7 @@ class Match {
       legalToEight: this.legalToEight,
       ballInHand: this.ballInHand,
       waitingShot: this.waitingShot,
-      pottedBy: this.pottedBy          // <— skickas till klienten
+      pottedBy: this.pottedBy
     };
   }
 
@@ -500,7 +499,7 @@ io.on('connection', (socket) => {
     m.shot(socket.id, { dx, dy, power, place });
   });
 
-  // Placering av vit boll vid ball-in-hand (öppning + foul efter miss/scratch)
+  // klick-placering av vit boll när ball-in-hand
   socket.on('pool:place', ({ roomId, x, y }) => {
     const m = matches.get(roomId); if (!m) return;
     if (!m.players.includes(socket.id)) return;
@@ -511,7 +510,7 @@ io.on('connection', (socket) => {
     let nx = Math.min(W - MARGIN - R, Math.max(MARGIN + R, x));
     let ny = Math.min(H - MARGIN - R, Math.max(MARGIN + R, y));
 
-    // Inte nära pockets
+    // Inte inne i ficka
     if (nearPocket(nx, ny)) return;
 
     // Inte över annan boll
