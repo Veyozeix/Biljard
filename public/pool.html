@@ -73,6 +73,19 @@ canvas{ background:#083223; border:2px solid #153b2a; border-radius:12px; width:
 .tray .row .lbl{ font-weight:700; color:#e9f1e6; }
 .tray-left{ right:100%; margin-right:10px } .tray-right{ left:100%; margin-left:10px }
 
+/* Placering-hint i mitten */
+.center-hint{
+  position:absolute; inset:0; display:none; place-items:center;
+  background:rgba(6,26,18,.55); border-radius:12px;
+}
+.center-hint .inner{
+  text-align:center; padding:18px 22px; background:#0e2219; border:1px solid #143425; border-radius:12px;
+  box-shadow:0 10px 30px rgba(0,0,0,.35);
+}
+.center-hint .title{ font-size:28px; font-weight:800; letter-spacing:1px; color:var(--accent); }
+.center-hint .sub{ margin-top:6px; color:var(--muted); }
+
+/* Game-end overlay (oförändrad) */
 .overlay{ position:absolute; inset:0; display:none; align-items:center; justify-content:center; background:rgba(6,26,18,.75); border-radius:12px; }
 .overlay .inner{ text-align:center; padding:24px; max-width:90%; }
 .big-title{ font-size:56px; letter-spacing:6px; color:var(--accent); font-weight:800; margin-bottom:12px; }
@@ -119,10 +132,20 @@ canvas{ background:#083223; border:2px solid #153b2a; border-radius:12px; width:
           <h4 id="trayLeftName">Spelare A</h4>
           <div id="trayLeftList" class="list"></div>
         </div>
+
         <canvas id="tbl" width="1080" height="540"></canvas>
+
         <div class="tray tray-right">
           <h4 id="trayRightName">Spelare B</h4>
           <div id="trayRightList" class="list"></div>
+        </div>
+
+        <!-- Center hint för placering -->
+        <div id="placeHint" class="center-hint">
+          <div class="inner">
+            <div class="title" id="placeTitle">PLACERA VITA BOLLEN</div>
+            <div class="sub">Klicka på bordet för att placera. Kö-sticken visas efter placering.</div>
+          </div>
         </div>
       </div>
 
@@ -156,13 +179,14 @@ document.addEventListener('DOMContentLoaded', ()=>{
   const scoreList=el('scoreList');
   const trayLeftName=el('trayLeftName'), trayRightName=el('trayRightName');
   const trayLeftList=el('trayLeftList'), trayRightList=el('trayRightList');
+  const placeHint=el('placeHint'), placeTitle=el('placeTitle');
 
   function updateJoin(){ joinBtn.disabled = nameInput.value.trim().length<1; }
   nameInput.addEventListener('input', updateJoin); updateJoin();
 
   const socket = io();
 
-  /* --- Chat/Scoreboard/Kö (oförändrat) --- */
+  /* --- Chat / Scoreboard / Kö (oförändrat) --- */
   let inQueue=false, cd=null, canSend=false;
   function setChatEnabled(x){ chatText.disabled=!x; chatSend.disabled=!x; }
   function startCooldown(s=5){
@@ -275,7 +299,7 @@ document.addEventListener('DOMContentLoaded', ()=>{
       const icon = document.createElement('canvas'); icon.width = icon.height = 30;
       const c2 = icon.getContext('2d'); const r = 12;
       c2.beginPath(); c2.arc(15,15,r,0,Math.PI*2); c2.fillStyle='rgba(0,0,0,.25)'; c2.fill();
-      const g = c2.createRadialGradient(15-r*0.3, 15-r*0.3, r*0.2, 15, 15, r);
+      const g = c2.createRadialGradient(15 - r*0.3, 15 - r*0.3, r*0.2, 15, 15, r);
       g.addColorStop(0,'#fff'); g.addColorStop(0.15, COLORS[num] || '#e9f1e6'); g.addColorStop(1,'#1e1e1e');
       c2.beginPath(); c2.arc(15,15,r,0,Math.PI*2); c2.fillStyle=g; c2.fill();
       if(num>=9 && num<=15){ c2.beginPath(); c2.arc(15,15,r*0.67,0,Math.PI*2); c2.fillStyle='#f1f9f6'; c2.fill(); }
@@ -293,9 +317,12 @@ document.addEventListener('DOMContentLoaded', ()=>{
     fill(trayRightList, s.pottedBy[s.players[1]]);
   }
 
+  // RITA INTE kö-sticken om ball-in-hand gäller
   function drawCueStick(s){
     if(!snapshot || snapshot.waitingShot!==true) return;
     if(current!==selfId) return;
+    if (s.ballInHand) return; // <--- döljer kö-sticken tills placering gjorts
+
     const cue = s.balls.find(b=>b.id===0); if(!cue || cue.potted) return;
     const dx = cue.x - (aim.ex||cue.x), dy = cue.y - (aim.ey||cue.y);
     const ang = Math.atan2(dy, dx);
@@ -314,6 +341,7 @@ document.addEventListener('DOMContentLoaded', ()=>{
   function drawAim(s){
     if(!snapshot || snapshot.waitingShot!==true) return;
     if(current!==selfId) return;
+    if (s.ballInHand) return; // <--- döljer linjen tills placering gjorts
     const cue = s.balls.find(b=>b.id===0); if(!cue || cue.potted) return;
     ctx.setLineDash([6,5]); ctx.strokeStyle = 'rgba(255,255,255,0.6)'; ctx.lineWidth = 2;
     ctx.beginPath(); ctx.moveTo(cue.x, cue.y); ctx.lineTo(aim.ex||cue.x, aim.ey||cue.y); ctx.stroke(); ctx.setLineDash([]);
@@ -332,17 +360,21 @@ document.addEventListener('DOMContentLoaded', ()=>{
     drawCueStick(snapshot);
     drawAim(snapshot);
 
-    // Hint + cursor vid ball-in-hand
-    if (snapshot.waitingShot && current===selfId && snapshot.ballInHand) {
+    // Visa stor hint mitt i bilden endast för den spelare som ska placera
+    const showPlace = snapshot.waitingShot && current===selfId && snapshot.ballInHand;
+    placeHint.style.display = showPlace ? 'grid' : 'none';
+
+    // Cursor och liten text-hint
+    if (showPlace) {
       c.style.cursor = 'crosshair';
-      statusEl.textContent = 'Klicka på bordet för att placera den vita bollen.';
+      placeTitle.textContent = 'PLACERA VITA BOLLEN';
+      statusEl.textContent = '';
     } else {
       c.style.cursor = 'default';
-      statusEl.textContent = '';
     }
   }
 
-  // GLOBAL musrörelse -> fri riktning även utanför canvas (innan och under drag)
+  // GLOBAL musrörelse -> fri riktning även utanför canvas
   function toCanvasPoint(clientX, clientY){
     const r=c.getBoundingClientRect();
     return { x: (clientX - r.left)*(c.width/r.width), y: (clientY - r.top)*(c.height/r.height) };
@@ -351,11 +383,10 @@ document.addEventListener('DOMContentLoaded', ()=>{
     if(!snapshot) return;
     const p = toCanvasPoint(e.clientX, e.clientY);
     aim.ex = p.x; aim.ey = p.y;
-    // Bara rendera ofta när vi faktiskt är i spel
     if (game.style.display !== 'none') render();
   });
 
-  // Klick-placering vid ball-in-hand
+  // ENDAST klick för placering när ball-in-hand (pinnen ej synlig då)
   c.addEventListener('click', e => {
     if (!snapshot || !snapshot.waitingShot || current!==selfId) return;
     if (!snapshot.ballInHand) return;
@@ -367,9 +398,10 @@ document.addEventListener('DOMContentLoaded', ()=>{
   let onMove=null;
   c.addEventListener('mousedown', e=>{
     if(!snapshot || snapshot.waitingShot!==true || current!==selfId) return;
+    if (snapshot.ballInHand) return; // <--- förhindra drag innan placering är gjord
+
     const p = toCanvasPoint(e.clientX, e.clientY);
     aim.down=true; aim.sx=aim.ex=p.x; aim.sy=aim.ey=p.y;
-    if(snapshot.ballInHand) aim.placing=true;
 
     onMove = (ev)=>{ const pp = toCanvasPoint(ev.clientX, ev.clientY); aim.ex=pp.x; aim.ey=pp.y; render(); };
     const onUp = (ev)=>{
@@ -378,15 +410,14 @@ document.addEventListener('DOMContentLoaded', ()=>{
       const cue = snapshot.balls.find(b=>b.id===0); if(!cue){ cleanup(); return; }
       const dx = cue.x - aim.ex, dy = cue.y - aim.ey;
       const power = Math.min(1, Math.hypot(dx,dy)/160);
-      const place = snapshot.ballInHand && aim.placing ? {x:aim.ex, y:aim.ey} : null;
-      socket.emit('pool:shot', { roomId, dx, dy, power, place });
+      socket.emit('pool:shot', { roomId, dx, dy, power, place: null });
       cleanup();
     };
     window.addEventListener('mousemove', onMove);
     window.addEventListener('mouseup', onUp, { once:true });
   });
   function cleanup(){
-    aim.down=false; aim.placing=false; aim.power=0;
+    aim.down=false; aim.power=0;
     if(onMove) { window.removeEventListener('mousemove', onMove); onMove=null; }
   }
 
