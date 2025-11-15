@@ -497,10 +497,10 @@ document.addEventListener('DOMContentLoaded', ()=>{
 
   /* --- Aiming-interaktion: 
      - fri sikt med musmove
-     - vänsterklick 1 = lås sikt
+     - vänsterklick (på canvas) = lås sikt / placera vit
      - dra bak = power
-     - vänsterklick 2 = skjut
-     - högerklick = avbryt (låset släpps)
+     - vänsterklick #2 (var som helst i fönstret) = skott
+     - högerklick (på canvas) = avbryt sikte
   --- */
 
   // 1) musrörelse: om olåst → uppdatera riktning, om låst → bara power
@@ -534,7 +534,9 @@ document.addEventListener('DOMContentLoaded', ()=>{
     if (game.style.display !== 'none') render();
   });
 
-  // 2) vänsterklick: placera (ball-in-hand) eller "lock / shoot"
+  // 2) vänsterklick på canvas:
+  //    - ball in hand: placera vit
+  //    - annars: om ej låst sikte → lås riktning
   c.addEventListener('click', e => {
     if (!snapshot || !snapshot.waitingShot || current!==selfId) return;
     const p = toCanvasPoint(e.clientX, e.clientY);
@@ -549,14 +551,20 @@ document.addEventListener('DOMContentLoaded', ()=>{
     if (!cue) return;
 
     if (!aim.locked){
-      // första klicket: lås siktet (riktning fryses), börja på 0 power
+      // lås siktet (riktning fryses), power nollställs
       aim.locked = true;
       aim.power = 0;
       render();
-      return;
     }
+    // om redan låst: själva skottet hanteras av global window-click nedan
+  });
 
-    // andra klicket: försök skjuta
+  // 3) global vänsterklick (var som helst) när sikte är låst → skott
+  function tryShootFromClick(){
+    if (!snapshot || !snapshot.waitingShot || current!==selfId) return;
+    if (snapshot.ballInHand) return;
+    if (!aim.locked) return;
+
     const power = aim.power;
     if (power <= 0.02){
       // nästan noll – tolka som "ångra skott", lås upp och nollställ
@@ -578,9 +586,16 @@ document.addEventListener('DOMContentLoaded', ()=>{
     aim.locked = false;
     aim.power = 0;
     render();
+  }
+
+  window.addEventListener('click', e => {
+    // om klicket var på canvasen sköts logik redan där
+    if (e.target === c) return;
+    // annars: om sikte är låst → skjut
+    tryShootFromClick();
   });
 
-  // 3) högerklick: avbryt sikte (endast när man INTE flyttar vit)
+  // 4) högerklick: avbryt sikte (endast på canvas)
   c.addEventListener('contextmenu', e => e.preventDefault());
   c.addEventListener('mousedown', e=>{
     if (e.button !== 2) return; // bara höger musknapp
