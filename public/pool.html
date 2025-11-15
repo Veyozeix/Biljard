@@ -209,11 +209,12 @@ document.addEventListener('DOMContentLoaded', ()=>{
   const c = el('tbl'); const ctx = c.getContext('2d');
   let roomId=null, selfId=null, oppId=null, current=null, snapshot=null;
 
-  // aim: lagrar aktuellt sikte + kraft
+  // aim: rikting + kraft + om siktet är låst
   let aim = {
-    dirX: 1,  // riktning (från vit → framåt)
+    dirX: 1,
     dirY: 0,
-    power: 0  // 0–1 baserat på hur långt bak musen är
+    power: 0,
+    locked: false
   };
 
   // roundRect polyfill
@@ -278,7 +279,7 @@ document.addEventListener('DOMContentLoaded', ()=>{
       ctx.beginPath(); ctx.arc(x,y,r*0.67,0,Math.PI*2);
       ctx.fillStyle='#f1f9f6'; ctx.fill();
     }
-    // nummerplatta
+    // nummerplatta (vit platta, svart text)
     if(number!==0){
       ctx.beginPath(); ctx.arc(x,y,r*0.45,0,Math.PI*2); ctx.fillStyle='#f1f1f1'; ctx.fill();
       ctx.fillStyle = '#000';
@@ -294,7 +295,7 @@ document.addEventListener('DOMContentLoaded', ()=>{
     }
   }
 
-  // TRAYS – om servern senare skickar pottedBy kan dessa fyllas
+  // TRAYS – om servern skickar pottedBy
   function renderTrays(s){
     if (!s.players) return;
     trayLeftName.textContent = s.names?.[s.players[0]] || 'Spelare';
@@ -349,7 +350,6 @@ document.addEventListener('DOMContentLoaded', ()=>{
     for (const b of state.balls){
       if (b.id === 0 || b.potted) continue;
 
-      // linje: P(t) = cue + d*t, let avstånd = 2R
       const ocx = cue.x - b.x;
       const ocy = cue.y - b.y;
       const dot = ocx*dirX + ocy*dirY;
@@ -428,7 +428,7 @@ document.addEventListener('DOMContentLoaded', ()=>{
     ctx.lineTo(tx, ty);
     ctx.stroke();
 
-    // 2) beräkna vilken boll som träffas först och vart den åker
+    // 2) beräkna träffad boll + dess riktning
     const hit = findAimTarget(s, cue, dirX, dirY);
     if (hit){
       // highlight kring objektbollen
@@ -439,7 +439,7 @@ document.addEventListener('DOMContentLoaded', ()=>{
       ctx.lineWidth=2;
       ctx.stroke();
 
-      // linje cue → träffpunkt (diskret)
+      // linje cue → träffpunkt
       ctx.setLineDash([4,4]);
       ctx.strokeStyle = 'rgba(255,255,255,0.4)';
       ctx.lineWidth = 1.5;
@@ -448,13 +448,13 @@ document.addEventListener('DOMContentLoaded', ()=>{
       ctx.lineTo(hit.ix, hit.iy);
       ctx.stroke();
 
-      // objektbollens riktning: från träffpunkten UT från bollen
+      // objektbollens riktning
       const cx = hit.ball.x, cy = hit.ball.y;
       const hx = hit.ix, hy = hit.iy;
       let odx = cx - hx;
       let ody = cy - hy;
       const olen = Math.hypot(odx, ody) || 1;
-      odx /= olen; ody /= olen; // "från kontaktpunkten utåt" – så träff på höger sida → bollen rullar vänster
+      odx /= olen; ody /= olen; // ut från träffpunkt
 
       const objLen = 140;
       const ox2 = cx + odx*objLen;
@@ -471,7 +471,7 @@ document.addEventListener('DOMContentLoaded', ()=>{
 
     ctx.setLineDash([]);
 
-    // 3) power-bar (hur långt bak musen är)
+    // 3) power-bar
     const w = 160, h = 10, x = c.width - w - 20, y = 20;
     ctx.strokeStyle = '#e7ff6e'; ctx.lineWidth=2; ctx.strokeRect(x,y,w,h);
     ctx.fillStyle = '#e7ff6e'; ctx.fillRect(x,y,w*aim.power,h);
@@ -495,46 +495,46 @@ document.addEventListener('DOMContentLoaded', ()=>{
     }
   }
 
-  /* --- Aiming-interaktion (ingen drag-release, bara flytta + klick) --- */
+  /* --- Aiming-interaktion: 
+     - fri sikt med musmove
+     - vänsterklick 1 = lås sikt
+     - dra bak = power
+     - vänsterklick 2 = skjut
+     - högerklick = avbryt (låset släpps)
+  --- */
 
-  // 1) musrörelse: styr riktning (framför bollen) + power (bakom bollen)
+  // 1) musrörelse: om olåst → uppdatera riktning, om låst → bara power
   window.addEventListener('mousemove', (e)=>{
     if (!snapshot || !snapshot.waitingShot || current!==selfId) return;
-    if (snapshot.ballInHand) return; // vid placering flyttar man bara bollen
+    if (snapshot.ballInHand) return; // vid placering ritar vi bara bollen
 
     const cue = findCueBall(snapshot);
     if (!cue) return;
     const p = toCanvasPoint(e.clientX, e.clientY);
 
-    // vektor från vit → mus
-    const vx = p.x - cue.x;
-    const vy = p.y - cue.y;
-    const dist = Math.hypot(vx, vy);
-    if (dist > 1){
-      const dirX = vx/dist;
-      const dirY = vy/dist;
-
-      // om musen ligger framför bollen i förhållande till nuvarande riktning,
-      // uppdatera riktningen (sikta)
-      const frontDot = dirX*aim.dirX + dirY*aim.dirY;
-      if (frontDot >= 0){
-        aim.dirX = dirX;
-        aim.dirY = dirY;
-      }
-    }
-
-    // power: hur långt musen är bakom bollen längs motsatt riktning
     const dx = p.x - cue.x;
     const dy = p.y - cue.y;
-    const alongBack = - (dx*aim.dirX + dy*aim.dirY); // >0 = bakom
-    const pullMax = 160; // hur långt bak för max-kraft
-    const raw = alongBack / pullMax;
-    aim.power = Math.max(0, Math.min(1, raw));
+    const dist = Math.hypot(dx, dy);
+
+    if (!aim.locked){
+      // fri sikt – uppdatera riktningen mot musen, power = 0
+      if (dist > 1){
+        aim.dirX = dx/dist;
+        aim.dirY = dy/dist;
+      }
+      aim.power = 0;
+    } else {
+      // sikte låst – ändra bara power utifrån hur långt bak musen är
+      const alongBack = - (dx*aim.dirX + dy*aim.dirY); // >0 = bakom bollen
+      const pullMax = 160;
+      const raw = alongBack / pullMax;
+      aim.power = Math.max(0, Math.min(1, raw));
+    }
 
     if (game.style.display !== 'none') render();
   });
 
-  // 2) klick: antingen placera (ball-in-hand) eller skjuta
+  // 2) vänsterklick: placera (ball-in-hand) eller "lock / shoot"
   c.addEventListener('click', e => {
     if (!snapshot || !snapshot.waitingShot || current!==selfId) return;
     const p = toCanvasPoint(e.clientX, e.clientY);
@@ -545,13 +545,26 @@ document.addEventListener('DOMContentLoaded', ()=>{
       return;
     }
 
-    // skjuta med aktuell riktning + kraft
     const cue = findCueBall(snapshot);
     if (!cue) return;
 
+    if (!aim.locked){
+      // första klicket: lås siktet (riktning fryses), börja på 0 power
+      aim.locked = true;
+      aim.power = 0;
+      render();
+      return;
+    }
+
+    // andra klicket: försök skjuta
     const power = aim.power;
-    // väldigt liten power: gör ingenting
-    if (power <= 0.02) return;
+    if (power <= 0.02){
+      // nästan noll – tolka som "ångra skott", lås upp och nollställ
+      aim.locked = false;
+      aim.power = 0;
+      render();
+      return;
+    }
 
     socket.emit('pool:shot', {
       roomId,
@@ -561,7 +574,22 @@ document.addEventListener('DOMContentLoaded', ()=>{
       place: null
     });
 
-    // nollställ power efter skott
+    // efter skott: lås upp & nollställ
+    aim.locked = false;
+    aim.power = 0;
+    render();
+  });
+
+  // 3) högerklick: avbryt sikte (endast när man INTE flyttar vit)
+  c.addEventListener('contextmenu', e => e.preventDefault());
+  c.addEventListener('mousedown', e=>{
+    if (e.button !== 2) return; // bara höger musknapp
+    e.preventDefault();
+    if (!snapshot || !snapshot.waitingShot || current!==selfId) return;
+    if (snapshot.ballInHand) return; // vid ball-in-hand vill vi inte avbryta sikte, vi placerar bara
+
+    // avbryt lås, nollställ power
+    aim.locked = false;
     aim.power = 0;
     render();
   });
