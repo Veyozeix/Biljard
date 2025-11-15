@@ -209,13 +209,11 @@ document.addEventListener('DOMContentLoaded', ()=>{
   const c = el('tbl'); const ctx = c.getContext('2d');
   let roomId=null, selfId=null, oppId=null, current=null, snapshot=null;
 
-  // aim: riktning + power + drag
+  // aim: lagrar aktuellt sikte + kraft
   let aim = {
-    dirX: 1, dirY: 0,
-    power: 0,
-    dragging: false,
-    dragStartX: 0,
-    dragStartY: 0
+    dirX: 1,  // riktning (från vit → framåt)
+    dirY: 0,
+    power: 0  // 0–1 baserat på hur långt bak musen är
   };
 
   // roundRect polyfill
@@ -280,7 +278,7 @@ document.addEventListener('DOMContentLoaded', ()=>{
       ctx.beginPath(); ctx.arc(x,y,r*0.67,0,Math.PI*2);
       ctx.fillStyle='#f1f9f6'; ctx.fill();
     }
-    // nummerplatta (alltid vit platta, svart text)
+    // nummerplatta
     if(number!==0){
       ctx.beginPath(); ctx.arc(x,y,r*0.45,0,Math.PI*2); ctx.fillStyle='#f1f1f1'; ctx.fill();
       ctx.fillStyle = '#000';
@@ -296,7 +294,7 @@ document.addEventListener('DOMContentLoaded', ()=>{
     }
   }
 
-  // TRAYS – en rad per boll med liten ikon
+  // TRAYS – om servern senare skickar pottedBy kan dessa fyllas
   function renderTrays(s){
     if (!s.players) return;
     trayLeftName.textContent = s.names?.[s.players[0]] || 'Spelare';
@@ -309,7 +307,6 @@ document.addEventListener('DOMContentLoaded', ()=>{
       icon.width = icon.height = 30;
       const c2 = icon.getContext('2d');
       const r = 12;
-      // liten skugga
       c2.beginPath(); c2.arc(15,15,r,0,Math.PI*2); c2.fillStyle='rgba(0,0,0,.25)'; c2.fill();
       const g = c2.createRadialGradient(15-r*0.3, 15-r*0.3, r*0.2, 15, 15, r);
       g.addColorStop(0,'#fff'); g.addColorStop(0.15, COLORS[num] || '#e9f1e6'); g.addColorStop(1,'#1e1e1e');
@@ -328,12 +325,10 @@ document.addEventListener('DOMContentLoaded', ()=>{
       (arr || []).slice().sort((a,b)=>a-b).forEach(n => listEl.appendChild(rowFor(n)));
     }
 
-    // om servern inte skickar pottedBy (nuvarande server gör inte det), håll dessa tomma
     fill(trayLeftList,  s.pottedBy?.[s.players[0]] || []);
     fill(trayRightList, s.pottedBy?.[s.players[1]] || []);
   }
 
-  // --- Hjälpfunktioner för sikte ---
   function toCanvasPoint(clientX, clientY){
     const r=c.getBoundingClientRect();
     return { x: (clientX - r.left)*(c.width/r.width), y: (clientY - r.top)*(c.height/r.height) };
@@ -343,18 +338,22 @@ document.addEventListener('DOMContentLoaded', ()=>{
     return s?.balls?.find(b => b.id===0 && !b.potted) || null;
   }
 
-  // hitta första objektbollen längs riktning
+  // hitta första objektbollen längs siktriktningen
   function findAimTarget(state, cue, dirX, dirY){
     if (!state || !cue) return null;
     const R = state.r;
     let bestT = Infinity;
     let target = null;
+    let hitX = 0, hitY = 0;
+
     for (const b of state.balls){
       if (b.id === 0 || b.potted) continue;
-      const vx = cue.x - b.x;
-      const vy = cue.y - b.y;
-      const dot = vx*dirX + vy*dirY;
-      const cval = vx*vx + vy*vy - (4*R*R);
+
+      // linje: P(t) = cue + d*t, let avstånd = 2R
+      const ocx = cue.x - b.x;
+      const ocy = cue.y - b.y;
+      const dot = ocx*dirX + ocy*dirY;
+      const cval = ocx*ocx + ocy*ocy - (4*R*R);
       const disc = dot*dot - cval;
       if (disc < 0) continue;
       const t = -dot - Math.sqrt(disc);
@@ -364,17 +363,18 @@ document.addEventListener('DOMContentLoaded', ()=>{
         target = b;
       }
     }
+
     if (!target || !isFinite(bestT)) return null;
-    const ix = cue.x + dirX*bestT;
-    const iy = cue.y + dirY*bestT;
-    return { ball: target, t: bestT, ix, iy };
+    hitX = cue.x + dirX*bestT;
+    hitY = cue.y + dirY*bestT;
+    return { ball: target, t: bestT, ix: hitX, iy: hitY };
   }
 
-  // RITA INTE kö-sticken om ball-in-hand
   function drawCueStick(s){
     if(!snapshot || snapshot.waitingShot!==true) return;
     if(current!==selfId) return;
-    if (s.ballInHand) return;
+    if (s.ballInHand) return; // vid placering: ingen kö
+
     const cue = findCueBall(s);
     if(!cue) return;
 
@@ -407,6 +407,7 @@ document.addEventListener('DOMContentLoaded', ()=>{
     if(!snapshot || snapshot.waitingShot!==true) return;
     if(current!==selfId) return;
     if (s.ballInHand) return;
+
     const cue = findCueBall(s);
     if(!cue) return;
 
@@ -415,61 +416,62 @@ document.addEventListener('DOMContentLoaded', ()=>{
 
     ctx.save();
 
-    // 1) grund-sikte från vit → framåt
+    // 1) vit linje: riktning på vita bollen
     const baseLen = 220;
     const tx = cue.x + dirX*baseLen;
     const ty = cue.y + dirY*baseLen;
     ctx.setLineDash([6,5]);
-    ctx.strokeStyle = 'rgba(255,255,255,0.6)';
+    ctx.strokeStyle = 'rgba(255,255,255,0.7)';
     ctx.lineWidth = 2;
     ctx.beginPath();
     ctx.moveTo(cue.x, cue.y);
     ctx.lineTo(tx, ty);
     ctx.stroke();
 
-    // 2) objektbollens riktiga bana
+    // 2) beräkna vilken boll som träffas först och vart den åker
     const hit = findAimTarget(s, cue, dirX, dirY);
     if (hit){
-      // linje från vit → träffpunkt
-      ctx.setLineDash([4,4]);
-      ctx.strokeStyle = 'rgba(255,255,255,0.35)';
-      ctx.lineWidth = 1.5;
-      ctx.beginPath();
-      ctx.moveTo(cue.x, cue.y);
-      ctx.lineTo(hit.ix, hit.iy);
-      ctx.stroke();
-
-      // objektbollens direction = line-of-centers (från vit → obj)
-      const odx = hit.ball.x - cue.x;
-      const ody = hit.ball.y - cue.y;
-      const olen = Math.hypot(odx, ody) || 1;
-      const oDirX = odx / olen;
-      const oDirY = ody / olen;
-
-      const objLen = 140;
-      const ox2 = hit.ball.x + oDirX*objLen;
-      const oy2 = hit.ball.y + oDirY*objLen;
-
-      ctx.setLineDash([3,6]);
-      ctx.strokeStyle = 'rgba(231,255,110,0.9)';
-      ctx.lineWidth = 2;
-      ctx.beginPath();
-      ctx.moveTo(hit.ball.x, hit.ball.y);
-      ctx.lineTo(ox2, oy2);
-      ctx.stroke();
-
-      // highlight-ring runt objektbollen
+      // highlight kring objektbollen
       ctx.setLineDash([]);
       ctx.beginPath();
       ctx.arc(hit.ball.x, hit.ball.y, s.r+3, 0, Math.PI*2);
       ctx.strokeStyle='rgba(231,255,110,0.95)';
       ctx.lineWidth=2;
       ctx.stroke();
+
+      // linje cue → träffpunkt (diskret)
+      ctx.setLineDash([4,4]);
+      ctx.strokeStyle = 'rgba(255,255,255,0.4)';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.moveTo(cue.x, cue.y);
+      ctx.lineTo(hit.ix, hit.iy);
+      ctx.stroke();
+
+      // objektbollens riktning: från träffpunkten UT från bollen
+      const cx = hit.ball.x, cy = hit.ball.y;
+      const hx = hit.ix, hy = hit.iy;
+      let odx = cx - hx;
+      let ody = cy - hy;
+      const olen = Math.hypot(odx, ody) || 1;
+      odx /= olen; ody /= olen; // "från kontaktpunkten utåt" – så träff på höger sida → bollen rullar vänster
+
+      const objLen = 140;
+      const ox2 = cx + odx*objLen;
+      const oy2 = cy + ody*objLen;
+
+      ctx.setLineDash([3,6]);
+      ctx.strokeStyle = 'rgba(231,255,110,0.9)';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(cx, cy);
+      ctx.lineTo(ox2, oy2);
+      ctx.stroke();
     }
 
     ctx.setLineDash([]);
 
-    // 3) power-bar
+    // 3) power-bar (hur långt bak musen är)
     const w = 160, h = 10, x = c.width - w - 20, y = 20;
     ctx.strokeStyle = '#e7ff6e'; ctx.lineWidth=2; ctx.strokeRect(x,y,w,h);
     ctx.fillStyle = '#e7ff6e'; ctx.fillRect(x,y,w*aim.power,h);
@@ -493,87 +495,75 @@ document.addEventListener('DOMContentLoaded', ()=>{
     }
   }
 
-  /* --- Aiming-interaktion --- */
+  /* --- Aiming-interaktion (ingen drag-release, bara flytta + klick) --- */
 
-  // 1) fri riktning: musrörelse (även utanför canvas)
+  // 1) musrörelse: styr riktning (framför bollen) + power (bakom bollen)
   window.addEventListener('mousemove', (e)=>{
     if (!snapshot || !snapshot.waitingShot || current!==selfId) return;
-    if (snapshot.ballInHand) return; // vid placering styr man bara bollen
-    if (aim.dragging) return;        // under drag ändras inte riktning
+    if (snapshot.ballInHand) return; // vid placering flyttar man bara bollen
 
     const cue = findCueBall(snapshot);
     if (!cue) return;
     const p = toCanvasPoint(e.clientX, e.clientY);
+
+    // vektor från vit → mus
+    const vx = p.x - cue.x;
+    const vy = p.y - cue.y;
+    const dist = Math.hypot(vx, vy);
+    if (dist > 1){
+      const dirX = vx/dist;
+      const dirY = vy/dist;
+
+      // om musen ligger framför bollen i förhållande till nuvarande riktning,
+      // uppdatera riktningen (sikta)
+      const frontDot = dirX*aim.dirX + dirY*aim.dirY;
+      if (frontDot >= 0){
+        aim.dirX = dirX;
+        aim.dirY = dirY;
+      }
+    }
+
+    // power: hur långt musen är bakom bollen längs motsatt riktning
     const dx = p.x - cue.x;
     const dy = p.y - cue.y;
-    const len = Math.hypot(dx,dy);
-    if (len < 1) return;
-    aim.dirX = dx/len;
-    aim.dirY = dy/len;
+    const alongBack = - (dx*aim.dirX + dy*aim.dirY); // >0 = bakom
+    const pullMax = 160; // hur långt bak för max-kraft
+    const raw = alongBack / pullMax;
+    aim.power = Math.max(0, Math.min(1, raw));
 
     if (game.style.display !== 'none') render();
   });
 
-  // 2) klick för ball-in-hand – placera vit
+  // 2) klick: antingen placera (ball-in-hand) eller skjuta
   c.addEventListener('click', e => {
     if (!snapshot || !snapshot.waitingShot || current!==selfId) return;
-    if (!snapshot.ballInHand) return;
     const p = toCanvasPoint(e.clientX, e.clientY);
-    socket.emit('pool:place', { roomId, x: p.x, y: p.y });
-  });
 
-  // 3) drag bakåt för att ladda kraft – tillåt drag utanför canvas
-  let dragMoveHandler = null;
-  c.addEventListener('mousedown', e=>{
-    if(!snapshot || snapshot.waitingShot!==true || current!==selfId) return;
-    if (snapshot.ballInHand) return; // kan inte skjuta när man ska placera
+    if (snapshot.ballInHand){
+      // placera vit
+      socket.emit('pool:place', { roomId, x: p.x, y: p.y });
+      return;
+    }
 
+    // skjuta med aktuell riktning + kraft
     const cue = findCueBall(snapshot);
     if (!cue) return;
 
-    aim.dragging = true;
+    const power = aim.power;
+    // väldigt liten power: gör ingenting
+    if (power <= 0.02) return;
+
+    socket.emit('pool:shot', {
+      roomId,
+      dx: aim.dirX,
+      dy: aim.dirY,
+      power,
+      place: null
+    });
+
+    // nollställ power efter skott
     aim.power = 0;
-    const start = toCanvasPoint(e.clientX, e.clientY);
-    aim.dragStartX = start.x;
-    aim.dragStartY = start.y;
-
-    dragMoveHandler = (ev)=>{
-      if (!aim.dragging) return;
-      const p = toCanvasPoint(ev.clientX, ev.clientY);
-      const dx = p.x - aim.dragStartX;
-      const dy = p.y - aim.dragStartY;
-      // projicera på motsatt riktning (bakåt = positivt)
-      const along = - (dx*aim.dirX + dy*aim.dirY);
-      const pullMax = 140;
-      const raw = along / pullMax;
-      aim.power = Math.max(0, Math.min(1, raw));
-      render();
-    };
-
-    const upHandler = (ev)=>{
-      window.removeEventListener('mousemove', dragMoveHandler);
-      aim.dragging = false;
-      const cueNow = findCueBall(snapshot);
-      if (!snapshot || !cueNow || current!==selfId || snapshot.waitingShot!==true) {
-        aim.power = 0; render(); return;
-      }
-      const pwr = aim.power;
-      aim.power = 0;
-      if (pwr <= 0.01){ render(); return; }
-
-      // skicka stöt – dx,dy = riktning
-      socket.emit('pool:shot', {
-        roomId,
-        dx: aim.dirX,
-        dy: aim.dirY,
-        power: pwr,
-        place: null
-      });
-      render();
-    };
-
-    window.addEventListener('mousemove', dragMoveHandler);
-    window.addEventListener('mouseup', upHandler, { once:true });
+    render();
   });
 
   /* --- Matchflöde --- */
