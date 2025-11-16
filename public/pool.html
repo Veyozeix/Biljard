@@ -1,664 +1,480 @@
-<!doctype html>
-<html lang="sv">
-<head>
-<meta charset="utf-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>8-Ball Pool</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Nunito:wght@400;700;800&display=swap" rel="stylesheet">
-<script src="/socket.io/socket.io.js" defer></script>
-<style>
-:root{
-  --bg:#061a12; --card:#10261b; --accent:#e7ff6e; --muted:#a0b38f;
-  --btn:#21412f; --btn-hover:#29523c; --white:#e9f1e6; --border:#153b2a;
-}
-*{box-sizing:border-box}
-html,body{height:100%}
-body{
-  margin:0; background:var(--bg); color:var(--white);
-  font-family:Nunito, system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
-  display:flex; align-items:flex-start; justify-content:center; padding:24px; min-height:100vh;
-}
-body.game{ padding:0; }
+// server_pool.js
+const path = require('path');
+const express = require('express');
+const http = require('http');
+const { Server } = require('socket.io');
 
-.layout{width:min(1220px,96vw); display:grid; gap:16px}
-.layout.lobby{grid-template-columns: 280px min(900px, 92vw) 260px;}
-.layout.onecol{ grid-template-columns: min(900px, 92vw); width:100%; min-height:100vh; place-content:center; place-items:center; }
-@supports (min-height: 100dvh){ .layout.onecol{ min-height:100dvh; } }
+const app = express();
+const server = http.createServer(app);
+const io = new Server(server, { pingInterval: 25000, pingTimeout: 20000 });
 
-.card{ background:var(--card); border-radius:14px; padding:18px; box-shadow:0 10px 30px rgba(0,0,0,.25); border:1px solid var(--border); }
-h1{ text-align:center; font-size:56px; letter-spacing:6px; margin:0 0 14px; color:var(--accent); font-weight:800; }
-.row{display:flex; gap:12px}
-input[type="text"]{ flex:1; background:#081e15; border:2px solid #0f2a1f; outline:none; color:var(--white); padding:12px 14px; border-radius:8px; font-size:16px;}
-button{ background:var(--btn); border:none; color:var(--white); padding:12px 14px; border-radius:8px; font-weight:700; cursor:pointer; transition:.2s; }
-button:hover{background:var(--btn-hover)} button:active{transform:translateY(1px)}
-button[disabled]{opacity:.45; cursor:not-allowed}
-.muted{color:var(--muted); font-size:14px; margin-top:8px}
-.names{margin-top:8px; display:flex; gap:8px; flex-wrap:wrap}
-.pill{background:#0c2219; border:1px solid #183a2b; padding:6px 10px; border-radius:999px; font-size:13px}
+app.use(express.static(path.join(__dirname, 'public')));
 
-/* Chat */
-.chat{display:flex; flex-direction:column; height: 700px;}
-.chat h3{margin:6px 0 12px}
-.chat-log{ flex:1; overflow:auto; background:#081e15; border:1px solid #0f2a1f; border-radius:10px; padding:10px; white-space: pre-wrap; word-break: break-word; overflow-wrap:anywhere; overflow-x:hidden; }
-.msg{margin:6px 0} .msg .n{font-weight:800; margin-right:6px} .msg.sys{color: var(--accent); font-weight:800}
-.chat-input{ display:flex; flex-direction:column; gap:6px; margin-top:10px }
-.chat-input input{ width:100% }
-.chat-input button{ align-self:flex-end }
+// Root -> pool.html (så "Cannot GET /" aldrig händer)
+app.get('/', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'pool.html'));
+});
 
-/* Scoreboard */
-.scoreboard h3{ margin:6px 0 12px; color:var(--accent); }
-.scoreboard .item{ display:flex; justify-content:space-between; padding:8px 10px; background:#0b1f17; border:1px solid #143425; border-radius:10px; margin-bottom:8px; }
-.scoreboard .empty{ color:var(--muted); font-style:italic; }
+/* ---------------- Lobby, kö, scoreboard ---------------- */
+let queue = [];                   // [{id, name}]
+let matches = new Map();          // roomId -> Match
+let waitingChampion = null;       // { id, name, readyAt, timeout }
 
-/* Game */
-#game .hud{display:flex; justify-content:space-between; align-items:center; margin:10px 0 16px}
-.canvas-wrap{display:grid; place-items:center; position:relative}
-canvas{ background:#083223; border:2px solid #153b2a; border-radius:12px; width:900px; height:480px; max-width:92vw }
+const wins = [];                  // [{ name, ts }]
+const DAY_MS = 24 * 60 * 60 * 1000;
 
-/* Trays (vänster/höger om bordet) – EN RAD/POST */
-.tray{
-  position:absolute; top:8px; bottom:8px; width:200px;
-  display:flex; flex-direction:column; gap:10px;
-  padding:12px; background:#0b1f17; border:1px solid #143425; border-radius:12px;
-  overflow:auto;
-}
-.tray h4{ margin:0; font-weight:800; color:var(--accent); text-align:center }
-.tray .list{ display:flex; flex-direction:column; gap:8px; }
-.tray .row{
-  display:grid; grid-template-columns: 28px 1fr; gap:10px; align-items:center;
-  padding:6px 8px; border:1px solid #143425; border-radius:10px; background:#0d231a;
-}
-.tray .row canvas{ width:28px; height:28px; display:block; }
-.tray .row .lbl{ font-weight:700; color:#e9f1e6; }
-
-.tray-left{ right:100%; margin-right:10px }
-.tray-right{ left:100%;  margin-left:10px }
-
-/* Overlay */
-.overlay{ position:absolute; inset:0; display:none; align-items:center; justify-content:center; background:rgba(6,26,18,.75); border-radius:12px; }
-.overlay .inner{ text-align:center; padding:24px; max-width:90%; }
-.big-title{ font-size:56px; letter-spacing:6px; color:var(--accent); font-weight:800; margin-bottom:12px; }
-.overlay .actions{display:flex; gap:10px; justify-content:center; margin-top:12px}
-.overlay .timer{color:var(--muted); margin-top:6px}
-</style>
-</head>
-<body>
-<div id="layout" class="layout lobby">
-  <!-- Chat -->
-  <div id="chatPanel" class="card chat">
-    <h3>Lobbychatt</h3>
-    <div id="chatLog" class="chat-log"></div>
-    <div class="chat-input"><input id="chatText" type="text" placeholder="Skriv ett meddelande…" maxlength="500" /><button id="chatSend">Skicka</button></div>
-  </div>
-
-  <!-- Mitte: lobby/game -->
-  <div class="card">
-    <h1>8-BALL POOL</h1>
-
-    <!-- Lobby -->
-    <div id="lobby">
-      <h2 style="margin:6px 0 14px">Spelkö</h2>
-      <div class="row">
-        <input id="name" type="text" placeholder="Skriv ditt namn" maxlength="18" />
-        <button id="join">Gå med i kön</button>
-      </div>
-      <div class="muted"><span id="count">0</span> spelare i kön</div>
-      <div id="names" class="names"></div>
-      <div style="margin-top:10px"><button id="leave" style="display:none">Lämna kön</button></div>
-    </div>
-
-    <!-- Game -->
-    <div id="game" style="display:none; position:relative">
-      <div class="hud">
-        <div id="vs" style="font-weight:800"></div>
-        <div class="muted" id="turnHint"></div>
-        <button id="exit">Lämna match</button>
-      </div>
-
-      <div class="canvas-wrap">
-        <!-- trays -->
-        <div class="tray tray-left">
-          <h4 id="trayLeftName">Spelare A</h4>
-          <div id="trayLeftList" class="list"></div>
-        </div>
-        <canvas id="tbl" width="1080" height="540"></canvas>
-        <div class="tray tray-right">
-          <h4 id="trayRightName">Spelare B</h4>
-          <div id="trayRightList" class="list"></div>
-        </div>
-      </div>
-
-      <div class="muted" id="status"></div>
-
-      <div id="overlay" class="overlay">
-        <div class="inner">
-          <div id="ovTitle" class="big-title">VINNARE VANN!!!</div>
-          <div class="actions" id="ovActions"></div>
-          <div class="timer" id="ovTimer"></div>
-        </div>
-      </div>
-    </div>
-  </div>
-
-  <!-- Scoreboard -->
-  <div id="scoreWrap" class="card scoreboard">
-    <h3>SCOREBOARD (24H)</h3>
-    <div id="scoreList"></div>
-  </div>
-</div>
-
-<script>
-document.addEventListener('DOMContentLoaded', ()=>{
-  const el = id => document.getElementById(id);
-  const layout=el('layout'), chatPanel=el('chatPanel');
-  const lobby=el('lobby'), game=el('game'), vsEl=el('vs'), statusEl=el('status'), turnHint=el('turnHint');
-  const nameInput=el('name'), joinBtn=el('join'), leaveBtn=el('leave'), countEl=el('count'), namesEl=el('names');
-  const overlay=el('overlay'), ovTitle=el('ovTitle'), ovActions=el('ovActions'), ovTimer=el('ovTimer');
-  const chatLog=el('chatLog'), chatText=el('chatText'), chatSend=el('chatSend');
-  const scoreList=el('scoreList');
-  const trayLeftName=el('trayLeftName'), trayRightName=el('trayRightName');
-  const trayLeftList=el('trayLeftList'), trayRightList=el('trayRightList');
-
-  function updateJoin(){ joinBtn.disabled = nameInput.value.trim().length<1; }
-  nameInput.addEventListener('input', updateJoin); updateJoin();
-
-  const socket = io();
-
-  /* --- Chat: i kön + cooldown --- */
-  let inQueue=false, cd=null, canSend=false;
-  function setChatEnabled(x){ chatText.disabled=!x; chatSend.disabled=!x; }
-  function startCooldown(s=5){
-    canSend=false; setChatEnabled(false);
-    let t=s, label='Skicka'; chatSend.textContent=`Vänta (${t})`;
-    cd=setInterval(()=>{ t--; chatSend.textContent=`Vänta (${t})`; if(t<=0){ clearInterval(cd); cd=null; chatSend.textContent=label; if(inQueue){ canSend=true; setChatEnabled(true); } } },1000);
+function getScoreboard() {
+  const now = Date.now();
+  while (wins.length && now - wins[0].ts > DAY_MS) wins.shift();
+  const tally = new Map();
+  for (const w of wins) {
+    if (now - w.ts > DAY_MS) continue;
+    tally.set(w.name, (tally.get(w.name) || 0) + 1);
   }
-  setChatEnabled(false);
-  function appendMsg({name,text,ts}){ const d=document.createElement('div'); d.className='msg'; const t=new Date(ts||Date.now()).toLocaleTimeString(); d.innerHTML=`<span class="n">${name}</span><span class="t">${text}</span> <span class="muted" style="float:right">${t}</span>`; chatLog.appendChild(d); chatLog.scrollTop=chatLog.scrollHeight; }
-  function appendSys(text){ const d=document.createElement('div'); d.className='msg sys'; d.textContent=text; chatLog.appendChild(d); chatLog.scrollTop=chatLog.scrollHeight; }
-  chatSend.addEventListener('click', ()=>{ const text=chatText.value.trim(); if(!text||!inQueue||!canSend) return; socket.emit('chat:message',{text}); chatText.value=''; startCooldown(5); });
-  chatText.addEventListener('keydown', e=>{ if(e.key==='Enter') chatSend.click(); });
-  socket.on('chat:message', appendMsg);
-  socket.on('chat:system', appendSys);
-  socket.on('chat:error', msg=>{ appendSys(msg); });
+  return [...tally.entries()]
+    .map(([name, count]) => ({ name, count }))
+    .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
+}
 
-  /* --- Scoreboard render --- */
-  function renderScoreboard(list){
-    if(!Array.isArray(list)||list.length===0){
-      scoreList.innerHTML = `<div class="empty">Ingen har vunnit en match de senaste 24 timmarna.</div>`;
+function broadcastQueue() {
+  io.to('lobby').emit('queue:update', {
+    count: queue.length,
+    names: queue.map(p => p.name),
+  });
+}
+function broadcastScoreboard() {
+  io.to('lobby').emit('score:update', getScoreboard());
+}
+function removeFromQueue(id) {
+  const i = queue.findIndex(p => p.id === id);
+  if (i !== -1) queue.splice(i, 1);
+}
+function nextRoomId() {
+  return 'room_' + Math.random().toString(36).slice(2, 10);
+}
+
+/* ---------------- Chat-begränsningar ---------------- */
+function isInQueue(id) { return queue.some(p => p.id === id); }
+const CHAT_COOLDOWN_MS = 5000;
+const lastChatAt = new Map(); // socketId -> timestamp
+
+/* ---------------- Bord & fysik (server-authoritativ) ---------------- */
+const TICK_MS = 16;                      // ~60fps
+const W = 1080, H = 540;                 // bordstorlek
+const MARGIN = 30;                       // rails
+const R = 10;                            // bollradie
+const POCKET_R = 20;                     // något större fickor (lite lättare)
+const FRICTION = 0.992;                  // friktion per tick
+const STOP_EPS = 0.04;                   // tröskel för vila
+const CUE_IMPULSE = 9.5;                 // kraft-multiplikator (lite punchy)
+const MAX_SHOT_POWER = 1.0;
+
+const POCKETS = [
+  { x: MARGIN, y: MARGIN },
+  { x: W / 2, y: MARGIN },
+  { x: W - MARGIN, y: MARGIN },
+  { x: MARGIN, y: H - MARGIN },
+  { x: W / 2, y: H - MARGIN },
+  { x: W - MARGIN, y: H - MARGIN },
+];
+
+const BALLS = {
+  cue: 0, eight: 8,
+  solids: [1, 2, 3, 4, 5, 6, 7],
+  stripes: [9, 10, 11, 12, 13, 14, 15],
+};
+
+function rackLayout() {
+  const startX = W * 0.66, startY = H / 2;
+  const dx = R * 2 + 0.5, dy = R * 1.73;
+  const order = [1,2,3,4,5,6,7,8, 9,10,11,12,13,14,15];
+  for (let i = order.length - 1; i > 0; i--) {
+    const j = (Math.random() * (i + 1)) | 0; [order[i], order[j]] = [order[j], order[i]];
+  }
+  const balls = [];
+  let idx = 0;
+  for (let row = 0; row < 5; row++) {
+    const nx = startX + row * dx;
+    const ny = startY - row * dy / 2;
+    for (let k = 0; k <= row; k++) {
+      const n = order[idx++];
+      balls.push({ id: n, x: nx, y: ny + k * dy, vx: 0, vy: 0, potted: false });
+    }
+  }
+  // cue-ball
+  balls.push({ id: 0, x: W * 0.25, y: H * 0.5, vx: 0, vy: 0, potted: false });
+  return balls;
+}
+function dist2(ax, ay, bx, by) { const dx = ax - bx, dy = ay - by; return dx * dx + dy * dy; }
+function norm(x, y) { const d = Math.hypot(x, y) || 1; return [x / d, y / d]; }
+
+/* ---------------- Match ---------------- */
+class Match {
+  constructor(roomId, left, right) {
+    this.roomId = roomId;
+    this.players = [left.id, right.id];
+    this.names = { [left.id]: left.name, [right.id]: right.name };
+
+    this.current = this.players[0];        // tur-ägare
+    this.balls = rackLayout();
+    this.groups = { [left.id]: null, [right.id]: null }; // solid/stripe
+    this.legalToEight = { [left.id]: false, [right.id]: false };
+    this.ballInHand = false;
+    this.waitingShot = true;
+    this.anyPottedThisTurn = [];
+    this.foulThisTurn = false;
+
+    this.timer = null;
+    this.lastSent = 0; // nät-throttle
+  }
+
+  start() {
+    if (this.timer) return;
+    this.timer = setInterval(() => this.tick(), TICK_MS);
+    this.sendState();
+  }
+  stop() { if (this.timer) clearInterval(this.timer); this.timer = null; }
+
+  ballsMoving() {
+    for (const b of this.balls) {
+      if (!b.potted && (Math.abs(b.vx) > STOP_EPS || Math.abs(b.vy) > STOP_EPS)) return true;
+    }
+    return false;
+  }
+
+  shot(fromId, { dx, dy, power, place }) {
+    if (fromId !== this.current) return;
+    const cue = this.balls.find(b => b.id === BALLS.cue);
+    if (this.ballInHand && place) {
+      cue.x = Math.min(W - MARGIN - R, Math.max(MARGIN + R, place.x));
+      cue.y = Math.min(H - MARGIN - R, Math.max(MARGIN + R, place.y));
+    }
+    const p = Math.max(0, Math.min(MAX_SHOT_POWER, +power || 0));
+    const [nx, ny] = norm(dx, dy);
+    cue.vx += nx * CUE_IMPULSE * p;
+    cue.vy += ny * CUE_IMPULSE * p;
+    this.waitingShot = false;
+    this.anyPottedThisTurn.length = 0;
+    this.foulThisTurn = false;
+  }
+
+  tick() {
+    if (this.waitingShot) {
+      this.sendState();
       return;
     }
-    scoreList.innerHTML = list.map(it => `<div class="item"><span>${it.name}</span><span>${it.count} ${it.count===1?'Match':'Matcher'}</span></div>`).join('');
+
+    this.integrate();
+    this.handleCollisions();
+    this.handlePockets();
+
+    if (!this.ballsMoving()) {
+      this.resolveTurn();
+      this.waitingShot = true;
+    }
+
+    this.sendState(); // alltid sända – mjuk animation
   }
-  socket.on('score:update', renderScoreboard);
 
-  /* --- Kö UI --- */
-  function resetLobbyBtns(){ nameInput.disabled=false; updateJoin(); leaveBtn.style.display='none'; }
-  joinBtn.addEventListener('click', ()=>{ const n=nameInput.value.trim(); if(!n)return; socket.emit('queue:join', n); leaveBtn.style.display='inline-block'; joinBtn.disabled=true; nameInput.disabled=true; });
-  leaveBtn.addEventListener('click', ()=> socket.emit('queue:leave'));
-  socket.on('queue:joined', ()=>{ inQueue=true; if(!cd){ canSend=true; setChatEnabled(true); } });
-  socket.on('queue:left',  ()=>{ inQueue=false; canSend=false; setChatEnabled(false); resetLobbyBtns(); });
-  socket.on('queue:update', ({count,names})=>{ countEl.textContent=count; namesEl.innerHTML = names.map(n=>`<span class="pill">${n}</span>`).join(''); });
+  integrate() {
+    for (const b of this.balls) {
+      if (b.potted) continue;
+      b.x += b.vx; b.y += b.vy;
+      b.vx *= FRICTION; b.vy *= FRICTION;
+      // rails
+      if (b.x <= MARGIN + R) { b.x = MARGIN + R; b.vx = Math.abs(b.vx); }
+      if (b.x >= W - MARGIN - R) { b.x = W - MARGIN - R; b.vx = -Math.abs(b.vx); }
+      if (b.y <= MARGIN + R) { b.y = MARGIN + R; b.vy = Math.abs(b.vy); }
+      if (b.y >= H - MARGIN - R) { b.y = H - MARGIN - R; b.vy = -Math.abs(b.vy); }
+      if (Math.abs(b.vx) < STOP_EPS) b.vx = 0;
+      if (Math.abs(b.vy) < STOP_EPS) b.vy = 0;
+    }
+  }
 
-  /* --- Layout helpers --- */
-  function setLobbyLayout(){ document.body.classList.remove('game'); layout.classList.add('lobby'); layout.classList.remove('onecol'); chatPanel.style.display='flex'; el('scoreWrap').style.display='block'; }
-  function setGameLayout(){ document.body.classList.add('game'); layout.classList.remove('lobby'); layout.classList.add('onecol'); chatPanel.style.display='none'; el('scoreWrap').style.display='none'; }
+  handleCollisions() {
+    for (let i = 0; i < this.balls.length; i++) {
+      const a = this.balls[i]; if (a.potted) continue;
+      for (let j = i + 1; j < this.balls.length; j++) {
+        const b = this.balls[j]; if (b.potted) continue;
+        const dx = b.x - a.x, dy = b.y - a.y, rr = (R * 2) * (R * 2);
+        const d2 = dx * dx + dy * dy;
+        if (d2 > 0 && d2 < rr) {
+          const d = Math.sqrt(d2) || 1;
+          const nx = dx / d, ny = dy / d;
+          // separera
+          const overlap = (R * 2 - d) / 2;
+          a.x -= nx * overlap; a.y -= ny * overlap;
+          b.x += nx * overlap; b.y += ny * overlap;
+          // elastisk impuls (lika massor)
+          const av = a.vx * nx + a.vy * ny;
+          const bv = b.vx * nx + b.vy * ny;
+          const p = bv - av;
+          a.vx += nx * p; a.vy += ny * p;
+          b.vx -= nx * p; b.vy -= ny * p;
+        }
+      }
+    }
+  }
 
-  /* --- Canvas & render --- */
-  const c = el('tbl'); const ctx = c.getContext('2d');
-  let roomId=null, selfId=null, oppId=null, current=null, snapshot=null;
+  handlePockets() {
+    const pocketDetectR2 = (POCKET_R - 2) * (POCKET_R - 2); // lite generösare än tidigare
+    for (const b of this.balls) {
+      if (b.potted) continue;
+      for (const p of POCKETS) {
+        if (dist2(b.x, b.y, p.x, p.y) <= pocketDetectR2) {
+          b.potted = true; b.vx = 0; b.vy = 0;
+          this.anyPottedThisTurn.push(b.id);
+          if (b.id === BALLS.cue) this.foulThisTurn = true;
+          break;
+        }
+      }
+    }
+  }
 
-  // aim: rikting + kraft + om siktet är låst
-  let aim = {
-    dirX: 1,
-    dirY: 0,
-    power: 0,
-    locked: false
-  };
+  resolveTurn() {
+    const me = this.current;
+    const opp = this.players.find(id => id !== me);
 
-  // roundRect polyfill
-  if (!CanvasRenderingContext2D.prototype.roundRect) {
-    CanvasRenderingContext2D.prototype.roundRect = function(x,y,w,h,r){
-      const rr = Math.min(r, w/2, h/2);
-      this.beginPath();
-      this.moveTo(x+rr,y);
-      this.arcTo(x+w,y,x+w,y+h,rr);
-      this.arcTo(x+w,y+h,x,y+h,rr);
-      this.arcTo(x,y+h,x,y,rr);
-      this.arcTo(x,y,x+w,y,rr);
-      this.closePath();
+    // scratch?
+    if (this.anyPottedThisTurn.includes(BALLS.cue)) {
+      const cue = this.balls.find(b => b.id === BALLS.cue);
+      cue.potted = false; cue.x = W * 0.25; cue.y = H * 0.5; cue.vx = cue.vy = 0;
+      this.ballInHand = true;
+      this.foulThisTurn = true;
+    } else {
+      this.ballInHand = false;
+    }
+
+    // sätt grupper om ej satta
+    if (this.groups[me] == null && this.anyPottedThisTurn.some(id => id !== BALLS.cue && id !== BALLS.eight)) {
+      const first = this.anyPottedThisTurn.find(id => id !== BALLS.cue && id !== BALLS.eight);
+      const isSolid = BALLS.solids.includes(first);
+      this.groups[me] = isSolid ? 'solid' : 'stripe';
+      this.groups[opp] = isSolid ? 'stripe' : 'solid';
+    }
+
+    // uppdatera legalToEight
+    for (const pid of this.players) {
+      const grp = this.groups[pid];
+      if (!grp) { this.legalToEight[pid] = false; continue; }
+      const left = this.balls.filter(b =>
+        !b.potted && ((grp === 'solid' && BALLS.solids.includes(b.id)) ||
+                      (grp === 'stripe' && BALLS.stripes.includes(b.id)))).length;
+      this.legalToEight[pid] = (left === 0);
+    }
+
+    // 8:an?
+    if (this.anyPottedThisTurn.includes(BALLS.eight)) {
+      const legal = this.legalToEight[me] && !this.foulThisTurn;
+      const winner = legal ? me : opp;
+      const loser = legal ? opp : me;
+      this.endMatch(winner, loser);
+      return;
+    }
+
+    // turbyte/fortsatt tur
+    const scoredMine = this.anyPottedThisTurn.some(id => {
+      const grp = this.groups[me]; if (!grp) return false;
+      return (grp === 'solid' && BALLS.solids.includes(id)) ||
+             (grp === 'stripe' && BALLS.stripes.includes(id));
+    });
+    if (this.foulThisTurn || !scoredMine) this.current = opp;
+
+    this.anyPottedThisTurn.length = 0;
+    this.foulThisTurn = false;
+  }
+
+  endMatch(winner, loser) {
+    const wName = this.names[winner] || 'Spelare';
+    wins.push({ name: wName, ts: Date.now() });
+    broadcastScoreboard();
+
+    io.to('lobby').emit('chat:system', `${wName} VANN MATCHEN!! STORT GRATTIS!`);
+
+    io.to(this.roomId).emit('pool:match:end', {
+      winnerId: winner,
+      loserId: loser,
+      winnerName: wName,
+      loserName: this.names[loser] || 'Spelare'
+    });
+
+    this.stop();
+
+    // kasta båda ur kön (kräv aktivt "Gå med i kön" igen)
+    removeFromQueue(winner); removeFromQueue(loser);
+
+    const wSock = io.sockets.sockets.get(winner);
+    const lSock = io.sockets.sockets.get(loser);
+    if (wSock) { wSock.leave(this.roomId); wSock.join('lobby'); wSock.emit('queue:left'); }
+    if (lSock) { lSock.leave(this.roomId); lSock.join('lobby'); lSock.emit('queue:left'); }
+
+    matches.delete(this.roomId);
+    broadcastQueue();
+
+    setChampionHold30s(winner, wName);
+  }
+
+  snapshot() {
+    return {
+      w: W, h: H, r: R, pr: POCKET_R, m: MARGIN,
+      pockets: POCKETS,
+      balls: this.balls.map(b => ({ id: b.id, x: b.x, y: b.y, vx: b.vx, vy: b.vy, potted: b.potted })),
+      current: this.current,
+      players: this.players,
+      names: this.names,
+      groups: this.groups,
+      legalToEight: this.legalToEight,
+      ballInHand: this.ballInHand,
+      waitingShot: this.waitingShot
     };
   }
 
-  function drawTable(s){
-    ctx.clearRect(0,0,c.width,c.height);
-    // trä
-    const woodGrad = ctx.createLinearGradient(0,0,0,c.height);
-    woodGrad.addColorStop(0, '#5a2f19'); woodGrad.addColorStop(1, '#3b1d0f');
-    ctx.fillStyle = woodGrad; ctx.fillRect(0,0,c.width,c.height);
-    // rails
-    ctx.fillStyle = '#165239';
-    ctx.fillRect(0,0,c.width,s.m);
-    ctx.fillRect(0,c.height-s.m,c.width,s.m);
-    ctx.fillRect(0,0,s.m,c.height);
-    ctx.fillRect(c.width-s.m,0,s.m,c.height);
-    // filt
-    ctx.fillStyle = '#0f6b47';
-    ctx.fillRect(s.m, s.m, c.width-2*s.m, c.height-2*s.m);
-    // fickor
-    for(const p of s.pockets){
-      ctx.beginPath(); ctx.arc(p.x+2, p.y+2, s.pr, 0, Math.PI*2);
-      ctx.fillStyle='rgba(0,0,0,0.35)'; ctx.fill();
-      ctx.beginPath(); ctx.arc(p.x, p.y, s.pr, 0, Math.PI*2);
-      ctx.fillStyle='#000'; ctx.fill();
-    }
+  sendState() {
+    const now = Date.now();
+    if (now - this.lastSent < 33) return; // ~30 fps till klienten
+    this.lastSent = now;
+    io.to(this.roomId).emit('pool:state', this.snapshot());
+  }
+}
+
+/* ---------------- Champion-hold & matchmaking ---------------- */
+function clearWinnerHold() {
+  if (waitingChampion?.timeout) clearTimeout(waitingChampion.timeout);
+  waitingChampion = null;
+}
+function setChampionHold30s(id, name) {
+  clearWinnerHold();
+  waitingChampion = { id, name, readyAt: Date.now() + 30000, timeout: null };
+  waitingChampion.timeout = setTimeout(() => {
+    const s = io.sockets.sockets.get(waitingChampion.id);
+    if (s) s.emit('winner:timeout');
+    waitingChampion.readyAt = Date.now();
+    tryStartMatch();
+  }, 30000);
+}
+function canStartMatch() {
+  if (matches.size > 0) return false;
+  if (waitingChampion) {
+    if (Date.now() < (waitingChampion.readyAt || 0)) return false;
+    return queue.length >= 1;
+  }
+  return queue.length >= 2;
+}
+function tryStartMatch() {
+  if (!canStartMatch()) { broadcastQueue(); return; }
+
+  let left, right;
+  if (waitingChampion) { left = waitingChampion; right = queue.shift(); clearWinnerHold(); }
+  else { left = queue.shift(); right = queue.shift(); }
+
+  const sL = io.sockets.sockets.get(left.id);
+  const sR = io.sockets.sockets.get(right.id);
+  if (!sL || !sR) {
+    if (sL) queue.unshift(left);
+    if (sR) queue.unshift(right);
+    broadcastQueue();
+    return;
   }
 
-  // riktiga 8-ball färger
-  const COLORS = {
-    0:'#f7f1de', 1:'#ffd400', 2:'#2c6cff', 3:'#e54b3c', 4:'#7b4dff',
-    5:'#ff8a00', 6:'#1e9e58', 7:'#7b2d2d', 8:'#000000',
-    9:'#ffd400', 10:'#2c6cff', 11:'#e54b3c', 12:'#7b4dff',
-    13:'#ff8a00', 14:'#1e9e58', 15:'#7b2d2d'
-  };
-  function ballColor(id){ return COLORS[id] || '#e9f1e6'; }
+  const roomId = nextRoomId();
+  sL.leave('lobby'); sR.leave('lobby');
+  sL.join(roomId); sR.join(roomId);
 
-  function drawBallShaded(x, y, r, base, number){
-    // skugga
-    ctx.beginPath(); ctx.arc(x+1.5,y+1.5,r,0,Math.PI*2);
-    ctx.fillStyle='rgba(0,0,0,0.25)'; ctx.fill();
-    // kropp
-    const g = ctx.createRadialGradient(x-r*0.4, y-r*0.4, r*0.2, x, y, r);
-    g.addColorStop(0, '#ffffff');
-    g.addColorStop(0.15, base);
-    g.addColorStop(1, '#1e1e1e');
-    ctx.beginPath(); ctx.arc(x,y,r,0,Math.PI*2); ctx.fillStyle=g; ctx.fill();
-    // stripes
-    if(number>=9 && number<=15){
-      ctx.beginPath(); ctx.arc(x,y,r*0.67,0,Math.PI*2);
-      ctx.fillStyle='#f1f9f6'; ctx.fill();
-    }
-    // nummerplatta (vit platta, svart text)
-    if(number!==0){
-      ctx.beginPath(); ctx.arc(x,y,r*0.45,0,Math.PI*2); ctx.fillStyle='#f1f1f1'; ctx.fill();
-      ctx.fillStyle = '#000';
-      ctx.font=`${Math.floor(r*1.1)}px Nunito`; ctx.textAlign='center'; ctx.textBaseline='middle';
-      ctx.fillText(String(number), x, y+0.5);
-    }
-  }
+  const m = new Match(roomId, left, right);
+  matches.set(roomId, m); m.start();
 
-  function drawBalls(s){
-    for(const b of s.balls){
-      if(b.potted) continue;
-      drawBallShaded(b.x, b.y, s.r, ballColor(b.id), b.id);
-    }
-  }
-
-  // TRAYS – om servern skickar pottedBy
-  function renderTrays(s){
-    if (!s.players) return;
-    trayLeftName.textContent = s.names?.[s.players[0]] || 'Spelare';
-    trayRightName.textContent = s.names?.[s.players[1]] || 'Spelare';
-
-    function rowFor(num){
-      const wrap = document.createElement('div');
-      wrap.className = 'row';
-      const icon = document.createElement('canvas');
-      icon.width = icon.height = 30;
-      const c2 = icon.getContext('2d');
-      const r = 12;
-      c2.beginPath(); c2.arc(15,15,r,0,Math.PI*2); c2.fillStyle='rgba(0,0,0,.25)'; c2.fill();
-      const g = c2.createRadialGradient(15-r*0.3, 15-r*0.3, r*0.2, 15, 15, r);
-      g.addColorStop(0,'#fff'); g.addColorStop(0.15, COLORS[num] || '#e9f1e6'); g.addColorStop(1,'#1e1e1e');
-      c2.beginPath(); c2.arc(15,15,r,0,Math.PI*2); c2.fillStyle=g; c2.fill();
-      if(num>=9 && num<=15){ c2.beginPath(); c2.arc(15,15,r*0.67,0,Math.PI*2); c2.fillStyle='#f1f9f6'; c2.fill(); }
-      if(num!==0){ c2.beginPath(); c2.arc(15,15,r*0.45,0,Math.PI*2); c2.fillStyle='#f1f1f1'; c2.fill();
-        c2.fillStyle='#000'; c2.font='13px Nunito'; c2.textAlign='center'; c2.textBaseline='middle'; c2.fillText(String(num),15,15.5); }
-      const lbl = document.createElement('div');
-      lbl.className='lbl'; lbl.textContent = `Boll ${num}`;
-      wrap.appendChild(icon); wrap.appendChild(lbl);
-      return wrap;
-    }
-
-    function fill(listEl, arr){
-      listEl.innerHTML = '';
-      (arr || []).slice().sort((a,b)=>a-b).forEach(n => listEl.appendChild(rowFor(n)));
-    }
-
-    fill(trayLeftList,  s.pottedBy?.[s.players[0]] || []);
-    fill(trayRightList, s.pottedBy?.[s.players[1]] || []);
-  }
-
-  function toCanvasPoint(clientX, clientY){
-    const r=c.getBoundingClientRect();
-    return { x: (clientX - r.left)*(c.width/r.width), y: (clientY - r.top)*(c.height/r.height) };
-  }
-
-  function findCueBall(s){
-    return s?.balls?.find(b => b.id===0 && !b.potted) || null;
-  }
-
-  // hitta första objektbollen längs siktriktningen
-  function findAimTarget(state, cue, dirX, dirY){
-    if (!state || !cue) return null;
-    const R = state.r;
-    let bestT = Infinity;
-    let target = null;
-    let hitX = 0, hitY = 0;
-
-    for (const b of state.balls){
-      if (b.id === 0 || b.potted) continue;
-
-      const ocx = cue.x - b.x;
-      const ocy = cue.y - b.y;
-      const dot = ocx*dirX + ocy*dirY;
-      const cval = ocx*ocx + ocy*ocy - (4*R*R);
-      const disc = dot*dot - cval;
-      if (disc < 0) continue;
-      const t = -dot - Math.sqrt(disc);
-      if (t <= 0) continue;
-      if (t < bestT){
-        bestT = t;
-        target = b;
-      }
-    }
-
-    if (!target || !isFinite(bestT)) return null;
-    hitX = cue.x + dirX*bestT;
-    hitY = cue.y + dirY*bestT;
-    return { ball: target, t: bestT, ix: hitX, iy: hitY };
-  }
-
-  function drawCueStick(s){
-    if(!snapshot || snapshot.waitingShot!==true) return;
-    if(current!==selfId) return;
-    if (s.ballInHand) return; // vid placering: ingen kö
-
-    const cue = findCueBall(s);
-    if(!cue) return;
-
-    const ang = Math.atan2(aim.dirY, aim.dirX);
-    const offset = 18 + (aim.power||0)*40;
-    const px = cue.x - Math.cos(ang) * offset;
-    const py = cue.y - Math.sin(ang) * offset;
-
-    const L = 260, W = 7;
-    ctx.save();
-    ctx.translate(px, py);
-    ctx.rotate(ang);
-
-    const grad = ctx.createLinearGradient(-L, 0, 0, 0);
-    grad.addColorStop(0, '#111');
-    grad.addColorStop(0.2, '#b07d45');
-    grad.addColorStop(0.95, '#eac089');
-    grad.addColorStop(1, '#f7d6a1');
-
-    ctx.fillStyle = grad;
-    ctx.beginPath(); ctx.roundRect(-L, -W/2, L, W, 3); ctx.fill();
-
-    ctx.fillStyle = '#f2f2f2';  // tip
-    ctx.fillRect(-2, -W/2, 8, W);
-
-    ctx.restore();
-  }
-
-  function drawAim(s){
-    if(!snapshot || snapshot.waitingShot!==true) return;
-    if(current!==selfId) return;
-    if (s.ballInHand) return;
-
-    const cue = findCueBall(s);
-    if(!cue) return;
-
-    const dirX = aim.dirX;
-    const dirY = aim.dirY;
-
-    ctx.save();
-
-    // 1) vit linje: riktning på vita bollen
-    const baseLen = 220;
-    const tx = cue.x + dirX*baseLen;
-    const ty = cue.y + dirY*baseLen;
-    ctx.setLineDash([6,5]);
-    ctx.strokeStyle = 'rgba(255,255,255,0.7)';
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-    ctx.moveTo(cue.x, cue.y);
-    ctx.lineTo(tx, ty);
-    ctx.stroke();
-
-    // 2) beräkna träffad boll + dess riktning
-    const hit = findAimTarget(s, cue, dirX, dirY);
-    if (hit){
-      // highlight kring objektbollen
-      ctx.setLineDash([]);
-      ctx.beginPath();
-      ctx.arc(hit.ball.x, hit.ball.y, s.r+3, 0, Math.PI*2);
-      ctx.strokeStyle='rgba(231,255,110,0.95)';
-      ctx.lineWidth=2;
-      ctx.stroke();
-
-      // linje cue → träffpunkt
-      ctx.setLineDash([4,4]);
-      ctx.strokeStyle = 'rgba(255,255,255,0.4)';
-      ctx.lineWidth = 1.5;
-      ctx.beginPath();
-      ctx.moveTo(cue.x, cue.y);
-      ctx.lineTo(hit.ix, hit.iy);
-      ctx.stroke();
-
-      // objektbollens riktning
-      const cx = hit.ball.x, cy = hit.ball.y;
-      const hx = hit.ix, hy = hit.iy;
-      let odx = cx - hx;
-      let ody = cy - hy;
-      const olen = Math.hypot(odx, ody) || 1;
-      odx /= olen; ody /= olen; // ut från träffpunkt
-
-      const objLen = 140;
-      const ox2 = cx + odx*objLen;
-      const oy2 = cy + ody*objLen;
-
-      ctx.setLineDash([3,6]);
-      ctx.strokeStyle = 'rgba(231,255,110,0.9)';
-      ctx.lineWidth = 2;
-      ctx.beginPath();
-      ctx.moveTo(cx, cy);
-      ctx.lineTo(ox2, oy2);
-      ctx.stroke();
-    }
-
-    ctx.setLineDash([]);
-
-    // 3) power-bar
-    const w = 160, h = 10, x = c.width - w - 20, y = 20;
-    ctx.strokeStyle = '#e7ff6e'; ctx.lineWidth=2; ctx.strokeRect(x,y,w,h);
-    ctx.fillStyle = '#e7ff6e'; ctx.fillRect(x,y,w*aim.power,h);
-
-    ctx.restore();
-  }
-
-  function render(){
-    if(!snapshot) return;
-    drawTable(snapshot);
-    drawBalls(snapshot);
-    renderTrays(snapshot);
-    drawCueStick(snapshot);
-    drawAim(snapshot);
-
-    // cursor-hint vid ball-in-hand
-    if (snapshot.waitingShot && current===selfId && snapshot.ballInHand) {
-      c.style.cursor = 'crosshair';
-    } else {
-      c.style.cursor = 'default';
-    }
-  }
-
-  /* --- Aiming-interaktion: 
-     - fri sikt med musmove
-     - vänsterklick (på canvas) = lås sikt / placera vit
-     - dra bak = power
-     - vänsterklick #2 (var som helst i fönstret) = skott
-     - högerklick (på canvas) = avbryt sikte
-  --- */
-
-  // 1) musrörelse: om olåst → uppdatera riktning, om låst → bara power
-  window.addEventListener('mousemove', (e)=>{
-    if (!snapshot || !snapshot.waitingShot || current!==selfId) return;
-    if (snapshot.ballInHand) return; // vid placering ritar vi bara bollen
-
-    const cue = findCueBall(snapshot);
-    if (!cue) return;
-    const p = toCanvasPoint(e.clientX, e.clientY);
-
-    const dx = p.x - cue.x;
-    const dy = p.y - cue.y;
-    const dist = Math.hypot(dx, dy);
-
-    if (!aim.locked){
-      // fri sikt – uppdatera riktningen mot musen, power = 0
-      if (dist > 1){
-        aim.dirX = dx/dist;
-        aim.dirY = dy/dist;
-      }
-      aim.power = 0;
-    } else {
-      // sikte låst – ändra bara power utifrån hur långt bak musen är
-      const alongBack = - (dx*aim.dirX + dy*aim.dirY); // >0 = bakom bollen
-      const pullMax = 160;
-      const raw = alongBack / pullMax;
-      aim.power = Math.max(0, Math.min(1, raw));
-    }
-
-    if (game.style.display !== 'none') render();
+  sL.emit('pool:match:start', {
+    roomId, opponent: right.name,
+    players: { selfId: left.id, oppId: right.id }
+  });
+  sR.emit('pool:match:start', {
+    roomId, opponent: left.name,
+    players: { selfId: right.id, oppId: left.id }
   });
 
-  // 2) vänsterklick på canvas:
-  //    - ball in hand: placera vit
-  //    - annars: om ej låst sikte → lås riktning
-  c.addEventListener('click', e => {
-    if (!snapshot || !snapshot.waitingShot || current!==selfId) return;
-    const p = toCanvasPoint(e.clientX, e.clientY);
+  broadcastQueue();
+}
 
-    if (snapshot.ballInHand){
-      // placera vit
-      socket.emit('pool:place', { roomId, x: p.x, y: p.y });
+/* ---------------- Socket.IO ---------------- */
+io.on('connection', (socket) => {
+  socket.join('lobby');
+  socket.emit('queue:update', { count: queue.length, names: queue.map(p => p.name) });
+  socket.emit('score:update', getScoreboard());
+
+  // chatt: krav att stå i kö + cooldown
+  socket.on('chat:message', ({ text }) => {
+    const now = Date.now();
+    if (!isInQueue(socket.id)) {
+      socket.emit('chat:error', 'Du måste vara i kön för att chatta.');
       return;
     }
-
-    const cue = findCueBall(snapshot);
-    if (!cue) return;
-
-    if (!aim.locked){
-      // lås siktet (riktning fryses), power nollställs
-      aim.locked = true;
-      aim.power = 0;
-      render();
-    }
-    // om redan låst: själva skottet hanteras av global window-click nedan
-  });
-
-  // 3) global vänsterklick (var som helst) när sikte är låst → skott
-  function tryShootFromClick(){
-    if (!snapshot || !snapshot.waitingShot || current!==selfId) return;
-    if (snapshot.ballInHand) return;
-    if (!aim.locked) return;
-
-    const power = aim.power;
-    if (power <= 0.02){
-      // nästan noll – tolka som "ångra skott", lås upp och nollställ
-      aim.locked = false;
-      aim.power = 0;
-      render();
+    const last = lastChatAt.get(socket.id) || 0;
+    const diff = now - last;
+    if (diff < CHAT_COOLDOWN_MS) {
+      const secs = Math.ceil((CHAT_COOLDOWN_MS - diff) / 1000);
+      socket.emit('chat:error', `Vänta ${secs}s innan du skickar igen.`);
       return;
     }
-
-    socket.emit('pool:shot', {
-      roomId,
-      dx: aim.dirX,
-      dy: aim.dirY,
-      power,
-      place: null
-    });
-
-    // efter skott: lås upp & nollställ
-    aim.locked = false;
-    aim.power = 0;
-    render();
-  }
-
-  window.addEventListener('click', e => {
-    // om klicket var på canvasen sköts logik redan där
-    if (e.target === c) return;
-    // annars: om sikte är låst → skjut
-    tryShootFromClick();
+    const entry = queue.find(p => p.id === socket.id);
+    const name = entry?.name || 'Spelare';
+    const clean = String(text || '').slice(0, 500).trim();
+    if (!clean) return;
+    lastChatAt.set(socket.id, now);
+    io.to('lobby').emit('chat:message', { name, text: clean, ts: now });
   });
 
-  // 4) högerklick: avbryt sikte (endast på canvas)
-  c.addEventListener('contextmenu', e => e.preventDefault());
-  c.addEventListener('mousedown', e=>{
-    if (e.button !== 2) return; // bara höger musknapp
-    e.preventDefault();
-    if (!snapshot || !snapshot.waitingShot || current!==selfId) return;
-    if (snapshot.ballInHand) return; // vid ball-in-hand vill vi inte avbryta sikte, vi placerar bara
-
-    // avbryt lås, nollställ power
-    aim.locked = false;
-    aim.power = 0;
-    render();
+  // kö
+  socket.on('queue:join', (name) => {
+    if (queue.some(p => p.id === socket.id)) return;
+    const clean = (name || 'Spelare').trim().slice(0, 18);
+    queue.push({ id: socket.id, name: clean });
+    socket.emit('queue:joined');
+    broadcastQueue();
+    tryStartMatch();
   });
 
-  /* --- Matchflöde --- */
-  socket.on('pool:match:start', ({roomId:r, opponent, players})=>{
-    roomId=r; selfId=players.selfId; oppId=players.oppId;
-    lobby.style.display='none'; game.style.display='block';
-    setGameLayout();
-    vsEl.textContent = `${(nameInput.value.trim()||'Du')} vs ${opponent}`;
-    statusEl.textContent='';
+  socket.on('queue:leave', () => {
+    removeFromQueue(socket.id);
+    socket.emit('queue:left');
+    broadcastQueue();
   });
 
-  socket.on('pool:state', (s)=>{
-    snapshot=s; current=s.current;
-    turnHint.textContent = (current===selfId) ? 'Din tur' : 'Motståndarens tur';
-    render();
-  });
+  socket.on('winner:cancel', () => { clearWinnerHold(); broadcastQueue(); });
 
-  function backToLobby(){
-    game.style.display='none'; lobby.style.display='block';
-    setLobbyLayout();
-    roomId=null; snapshot=null; render();
-  }
+  socket.on('disconnect', () => {
+    const wasInQueue = isInQueue(socket.id);
+    removeFromQueue(socket.id);
+    if (waitingChampion && waitingChampion.id === socket.id) clearWinnerHold();
 
-  let countdown=null;
-  socket.on('pool:match:end', ({winnerId, loserId, winnerName})=>{
-    ovTitle.textContent = `${winnerName||'Spelare'} VANN!!!`;
-    overlay.style.display='flex'; ovActions.innerHTML=''; ovTimer.textContent='';
-    const iWon = winnerId===selfId;
-
-    if(!iWon){
-      const b=document.createElement('button'); b.textContent='Tillbaka till kön'; b.onclick=backToLobby; ovActions.appendChild(b);
-      let t=10; ovTimer.textContent=`Tillbaka till kön om ${t} sekunder`;
-      countdown=setInterval(()=>{ t--; ovTimer.textContent=`Tillbaka till kön om ${t} sekunder`; if(t<=0){ clearInterval(countdown); countdown=null; backToLobby(); overlay.style.display='none'; } },1000);
-    } else {
-      const b=document.createElement('button'); b.textContent='Tillbaka till kön'; b.onclick=()=>{ socket.emit('winner:cancel'); backToLobby(); overlay.style.display='none'; }; ovActions.appendChild(b);
-      let t=30; ovTimer.textContent=`Ny runda startar inom ${t} sekunder om kö finns`;
-      countdown=setInterval(()=>{ t--; ovTimer.textContent=`Ny runda startar inom ${t} sekunder om kö finns`; if(t<=0){ clearInterval(countdown); countdown=null; backToLobby(); overlay.style.display='none'; } },1000);
-      socket.once('winner:timeout', ()=>{ if(countdown){ clearInterval(countdown); countdown=null; } backToLobby(); overlay.style.display='none'; });
+    for (const [roomId, m] of matches) {
+      if (!m.players.includes(socket.id)) continue;
+      const other = m.players.find(id => id !== socket.id);
+      const otherSock = io.sockets.sockets.get(other);
+      if (otherSock) {
+        otherSock.leave(roomId); otherSock.join('lobby');
+        otherSock.emit('pool:opponent-left');
+        otherSock.emit('queue:left');
+      }
+      m.stop(); matches.delete(roomId);
     }
+    if (wasInQueue) socket.emit?.('queue:left');
+    broadcastQueue();
+    tryStartMatch();
   });
 
-  socket.on('pool:opponent-left', ()=>{ backToLobby(); });
+  // spel-input
+  socket.on('pool:shot', ({ roomId, dx, dy, power, place }) => {
+    const m = matches.get(roomId); if (!m) return;
+    if (!m.players.includes(socket.id)) return;
+    if (m.current !== socket.id) return;
+    m.shot(socket.id, { dx, dy, power, place });
+  });
 
-  // snapshots vid anslutning hanteras server-side
-  socket.on('queue:update', ({count,names})=>{ countEl.textContent=count; namesEl.innerHTML = names.map(n=>`<span class="pill">${n}</span>`).join(''); });
-
-  // Exit
-  el('exit').addEventListener('click', ()=> window.location.reload());
-
-  function setLobbyLayout(){ document.body.classList.remove('game'); layout.classList.add('lobby'); layout.classList.remove('onecol'); chatPanel.style.display='flex'; el('scoreWrap').style.display='block'; }
-  function setGameLayout(){ document.body.classList.add('game'); layout.classList.remove('lobby'); layout.classList.add('onecol'); chatPanel.style.display='none'; el('scoreWrap').style.display='none'; }
+  socket.on('pool:place', ({ roomId, x, y }) => {
+    // vi placerar via pool:shot(place) – medvetet tom för kompatibilitet
+  });
 });
-</script>
-</body>
-</html>
+
+/* ---------------- Start ---------------- */
+const port = process.env.PORT || 3000;
+server.listen(port, () => console.log('Pool server on', port));
