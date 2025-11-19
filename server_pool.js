@@ -64,8 +64,18 @@ const W = 1080, H = 540;                 // bordstorlek
 const MARGIN = 30;                       // rails
 const R = 10;                            // bollradie
 const POCKET_R = 18;                     // fickradie
+
+// Ny: lite större “entry-zon” runt fickan där rails inte ska störa
+const POCKET_ENTRY_R = POCKET_R + R * 0.7;
+
+// Friktion & trösklar
 const FRICTION = 0.992;                  // friktion per tick
 const STOP_EPS = 0.04;                   // tröskel för vila
+
+// Nytt: mer realistisk dämpning
+const RAIL_CUSHION_LOSS = 0.94;          // energiförlust vid rail-studs
+const COLLISION_LOSS = 0.98;             // energiförlust vid boll-boll-kollision
+
 const CUE_IMPULSE = 9.5;                 // kraft-multiplikator (lite punchy)
 const MAX_SHOT_POWER = 1.0;
 
@@ -193,13 +203,38 @@ class Match {
   integrate() {
     for (const b of this.balls) {
       if (b.potted) continue;
-      b.x += b.vx; b.y += b.vy;
-      b.vx *= FRICTION; b.vy *= FRICTION;
-      // rails
-      if (b.x <= MARGIN + R) { b.x = MARGIN + R; b.vx = Math.abs(b.vx); }
-      if (b.x >= W - MARGIN - R) { b.x = W - MARGIN - R; b.vx = -Math.abs(b.vx); }
-      if (b.y <= MARGIN + R) { b.y = MARGIN + R; b.vy = Math.abs(b.vy); }
-      if (b.y >= H - MARGIN - R) { b.y = H - MARGIN - R; b.vy = -Math.abs(b.vy); }
+
+      // positionsuppdatering + friktion
+      b.x += b.vx;
+      b.y += b.vy;
+      b.vx *= FRICTION;
+      b.vy *= FRICTION;
+
+      // Är vi nära en ficka? (lite större zon än själva potten)
+      const inPocketZone = POCKETS.some(p =>
+        dist2(b.x, b.y, p.x, p.y) <= POCKET_ENTRY_R * POCKET_ENTRY_R
+      );
+
+      // rails – men bara om vi INTE är i fick-zonen
+      if (!inPocketZone) {
+        if (b.x <= MARGIN + R) {
+          b.x = MARGIN + R;
+          b.vx = Math.abs(b.vx) * RAIL_CUSHION_LOSS;
+        }
+        if (b.x >= W - MARGIN - R) {
+          b.x = W - MARGIN - R;
+          b.vx = -Math.abs(b.vx) * RAIL_CUSHION_LOSS;
+        }
+        if (b.y <= MARGIN + R) {
+          b.y = MARGIN + R;
+          b.vy = Math.abs(b.vy) * RAIL_CUSHION_LOSS;
+        }
+        if (b.y >= H - MARGIN - R) {
+          b.y = H - MARGIN - R;
+          b.vy = -Math.abs(b.vy) * RAIL_CUSHION_LOSS;
+        }
+      }
+
       if (Math.abs(b.vx) < STOP_EPS) b.vx = 0;
       if (Math.abs(b.vy) < STOP_EPS) b.vy = 0;
     }
@@ -215,16 +250,21 @@ class Match {
         if (d2 > 0 && d2 < rr) {
           const d = Math.sqrt(d2) || 1;
           const nx = dx / d, ny = dy / d;
+
           // separera
           const overlap = (R * 2 - d) / 2;
           a.x -= nx * overlap; a.y -= ny * overlap;
           b.x += nx * overlap; b.y += ny * overlap;
-          // elastisk impuls (lika massor)
+
+          // elastisk impuls (lika massor) + lätt dämpning
           const av = a.vx * nx + a.vy * ny;
           const bv = b.vx * nx + b.vy * ny;
-          const p = bv - av;
-          a.vx += nx * p; a.vy += ny * p;
-          b.vx -= nx * p; b.vy -= ny * p;
+          const p = (bv - av) * COLLISION_LOSS;
+
+          a.vx += nx * p;
+          a.vy += ny * p;
+          b.vx -= nx * p;
+          b.vy -= ny * p;
 
           // första kontakt mellan cue och annan boll?
           if (!this.firstContactMade) {
@@ -242,7 +282,8 @@ class Match {
     for (const b of this.balls) {
       if (b.potted) continue;
       for (const p of POCKETS) {
-        if (dist2(b.x, b.y, p.x, p.y) <= (POCKET_R - 4) * (POCKET_R - 4)) {
+        // Lite generösare pott-radie: +2 istället för -4
+        if (dist2(b.x, b.y, p.x, p.y) <= (POCKET_R + 2) * (POCKET_R + 2)) {
           b.potted = true; b.vx = 0; b.vy = 0;
           this.anyPottedThisTurn.push(b.id);
           if (b.id === BALLS.cue) this.foulThisTurn = true;
